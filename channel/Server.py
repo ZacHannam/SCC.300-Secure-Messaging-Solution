@@ -13,7 +13,7 @@ import requests
 import socket
 import time
 from enum import Enum, auto
-import subprocess
+from threading import Event
 
 from Properties import CHANNEL_ID_LENGTH, CHANNEL_SECRET_KEY_LENGTH, DEFAULT_PORT_SERVER, CHANNEL_BIN_DIMENSIONS, \
     CHANNEL_INFO_BIN_DIMENSIONS, CHANNEL_USER_DISPLAY_NAME_MAX, ALIVE_TIME, MAXIMUM_MESSAGE_SIZE
@@ -30,6 +30,7 @@ from channel.packet.server.S2C_UserJoinPacket import UserJoinPacket
 from channel.packet.server.S2C_AlivePacket import AlivePacket
 from channel.packet.server.S2C_InfoMessagePacket import InfoMessagePacket
 from channel.packet.server.S2C_TextMessagePacket import TextMessagePacket
+from channel.packet.server.S2C_ClientDisconnectPacket import ClientDisconnectPacket
 from Language import info
 
 
@@ -39,23 +40,18 @@ class IPType(Enum):
 
 
 class User:
-    def __init__(self, paramConnection, paramDisplayName: str,
+    def __init__(self, paramDisplayName: str,
                  paramPublicKey: RSAPublicKey, paramServerConnectionService):
-        self.__connection = paramConnection
         self.__displayName = paramDisplayName
         self.__publicKey = paramPublicKey
         self.__lastAliveTime = int(time.time())
         self.__serverConnectionService = paramServerConnectionService
 
-    def stop(self):
-        self.__serverConnectionService.stop()
-        self.getConnection().close()
-
     def getDisplayName(self) -> str:
         return self.__displayName
 
-    def getConnection(self):
-        return self.__connection
+    def getServerConnectionService(self):
+        return self.__serverConnectionService
 
     def getPublicKey(self) -> RSAPublicKey:
         return self.__publicKey
@@ -69,28 +65,28 @@ class User:
 
 class Server:
     def __init__(self, paramTerminal: str, channel_id=None, secret_key=None, port=DEFAULT_PORT_SERVER,
-                 tunnel=True, public=False):
+                 tunnel=None, public=False):
         self.__terminal = paramTerminal
 
         self.__channelID = channel_id if channel_id is not None else generateRandomChannelID()
         self.__secretKeyBin = secret_key if secret_key is not None else generateRandomSecretKey()
         self.__port = port
         self.__public = public
-        self.__tunnel = tunnel
 
+        self.__stop = False
         self.__users = {}
         self.__ip = self.__getIP()
-        self.__tunnelURL = None
-
+        self.__tunnelURL = tunnel
         self.__generatePublicAndPrivateKeys()
+
+        self.__serverHostService = None
+        self.__serverAliveService = None
+
         self.__startServer()
 
     """
             Getter Methods
     """
-
-    def isTunneling(self) -> bool:
-        return self.__tunnel
 
     def getTerminal(self) -> str:
         return self.__terminal
@@ -110,6 +106,12 @@ class Server:
     def getChannelIDHash(self) -> int:
         hex_digest = hashlib.sha256(self.getChannelID().encode()).hexdigest()
         return int(hex_digest, 16)
+
+    def getServerHostService(self):
+        return self.__serverHostService
+
+    def getServerAliveService(self):
+        return self.__serverAliveService
 
     """
                 IP
@@ -147,8 +149,8 @@ class Server:
             Tunneling
     """
 
-    def beginTunnelingService(self):
-        ...
+    def isTunneling(self) -> bool:
+        return self.__tunnelURL is not None
 
     def getTunnelURL(self) -> dict:
         return self.__tunnelURL
@@ -166,7 +168,7 @@ class Server:
     def getPublicKey(self) -> RSAPublicKey:
         return self.getPrivateKey().public_key()
 
-    @lru_cache()
+    @lru_cache(maxsize=1)
     def getPublicKeyBytes(self) -> bytes:
         public_key_der = self.getPublicKey().public_bytes(
             encoding=serialization.Encoding.PEM,
@@ -192,11 +194,12 @@ class Server:
         return self.__users.get(paramIP, None)
 
     def getAllRecipients(self) -> list:
-        return [(user.getConnection(), user.getPublicKey()) for user in self.__users.values()]
+        return [(user.getServerConnectionService().getConnection(), user.getPublicKey())
+                for user in self.__users.values()]
 
-    def registerUser(self, paramConnection, paramDisplayName, paramPublicKey, paramAuthenticateService) -> User:
-        user = User(paramConnection, paramDisplayName, paramPublicKey, paramAuthenticateService)
-        self.__users[paramConnection] = user
+    def registerUser(self, paramDisplayName, paramPublicKey, paramServerConnectionService) -> User:
+        user = User(paramDisplayName, paramPublicKey, paramServerConnectionService)
+        self.__users[paramServerConnectionService.getConnection()] = user
 
         userJoinPacket = UserJoinPacket(paramDisplayName)
         sendPacket(userJoinPacket, self.getAllRecipients())
@@ -206,14 +209,24 @@ class Server:
     def isUser(self, paramIP: tuple) -> bool:
         return paramIP in self.__users
 
-    def unregisterUser(self, paramConnection):
+    def unregisterUser(self, paramConnection: tuple, disconnect_reason=None):
         if paramConnection in self.__users.keys():
 
-            userJoinPacket = UserLeavePacket(self.__users.get(paramConnection).getDisplayName())
-            sendPacket(userJoinPacket, self.getAllRecipients())
+            user = self.__users.get(paramConnection)
+            serverConnectionService = user.getServerConnectionService()
 
-            self.__users.get(paramConnection).stop()
+            userLeavePacket = UserLeavePacket(user.getDisplayName())
+            sendPacket(userLeavePacket, self.getAllRecipients())
+
+            clientDisconnectPacket = ClientDisconnectPacket(disconnect_reason)
+            serverConnectionService.sendPacket(clientDisconnectPacket)
+            serverConnectionService.stop()
+
             del self.__users[paramConnection]
+
+    def unregisterAllUsers(self, disconnect_reason=None):
+        for key in list(self.__users.keys())[:]:
+            self.unregisterUser(key, disconnect_reason)
 
     def getUsers(self) -> dict:
         return self.__users
@@ -222,8 +235,12 @@ class Server:
                 SERVER
     """
 
-    def __stopServer(self):
-        ...
+    def stop(self):
+        self.unregisterAllUsers(disconnect_reason="Server stopping.")
+        self.getServerAliveService().stop()
+
+        print("Stopping server host service")
+        self.getServerHostService().stop()
 
     def __startServer(self):
         # 1) Check if terminal is available
@@ -236,23 +253,18 @@ class Server:
 
         # 2) Start receiver thread
 
-        channelHostService = ServerHostService(self)
-        channelHostService.start()
+        serverHostService = ServerHostService(self)
+        serverHostService.start()
+        self.__serverHostService = serverHostService
 
-        while not channelHostService.isRunning():
+        while not serverHostService.isReady():
             continue
-
-        if self.isTunneling():
-            tunnelService = TunnelService(self)
-            tunnelService.start()
-
-            while self.getTunnelURL() is None:
-                continue
 
         # 3) Start alive service
 
-        aliveService = AliveService(self)
-        aliveService.start()
+        serverAliveService = ServerAliveService(self)
+        serverAliveService.start()
+        self.__serverAliveService = serverAliveService
 
         # 4) Publish channel public service
 
@@ -261,75 +273,295 @@ class Server:
         publishChannelService.join()
 
         if not publishChannelService.getResult()['SUCCESS']:
-            self.__stopServer()
             raise RuntimeError(f"Failed to publish channel\n{publishChannelService.getResult()['EXCEPTION']}")
 
 
-class TunnelService(Service.ServiceThread):
-    def __init__(self, paramServer: Server):
-        super().__init__(Service.ServiceType.SERVER_TUNNEL)
-
-        self.__server = paramServer
-        self.__tunnelEstablished = False
-
-    def getServer(self) -> Server:
-        return self.__server
-
-    def run(self):
-
-
-        info("CHANNEL_BEGIN_TUNNEL", channel_id=self.getServer().getChannelID())
-
-        process = subprocess.Popen(f"pylt port {str(self.getServer().getPort())}", shell=True,
-                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-
-        time.sleep(2)
-
-        # Read output line by line as it becomes available
-        for line in process.stdout:
-            try:
-                urlMatch = re.search(r"your url is: (https?://\S+)", line)
-                if urlMatch:
-                    url = urlMatch.group(1)
-                    self.getServer().setTunnelURL({"tunnel_url": url,
-                                                   "tunnel_binary": int.from_bytes(url.encode('utf-8'), byteorder="big")
-                                                   })
-                    info("CHANNEL_FINISH_TUNNEL", channel_id=self.getServer().getChannelID(), tunnel_url=url)
-                    continue
-
-
-                exceptionMatch = re.search(r"Error: (.+)", line)
-                if exceptionMatch:
-                    raise RuntimeError(f"Exception occurred when connecting to tunnel: {exceptionMatch.group(1)}")
-            except AttributeError:
-                raise RuntimeError("Something wrong happened when connecting to tunnel")
-
-        process.wait()
-
-        print("Finished tunneling service")
-
-
-class AliveService(Service.ServiceThread):
+class ServerAliveService(Service.ServiceThread):
     def __init__(self, paramServer: Server):
         super().__init__(Service.ServiceType.SERVER_ALIVE)
 
         self.__server = paramServer
+        self.__stop = Event()
+
+    def stop(self):
+        self.__stop.set()
 
     def getServer(self) -> Server:
         return self.__server
 
     def run(self):
-        while True:
+        while not self.__stop.is_set():
 
             currentTime = int(time.time())
 
             for user in self.getServer().getUsers().values():
                 if user.getLastAliveTime() + (ALIVE_TIME * 2) < currentTime:
-                    self.getServer().unregisterUser(user)
+                    self.getServer().unregisterUser(user, "Timed out.")
 
             sendPacket(AlivePacket(), self.getServer().getAllRecipients())
 
-            time.sleep(ALIVE_TIME)
+            self.__stop.wait(ALIVE_TIME)
+
+        print("Finished thread: Alive")
+
+
+class ServerHostService(Service.ServiceThread):
+    def __init__(self, paramServer: Server):
+        super().__init__(Service.ServiceType.SERVER_HOST)
+
+        self.__server = paramServer
+        self.__ready = False
+        self.__stop = Event()
+
+    def stop(self):
+        print("---Set stop active in host service")
+        self.__stop.set()
+
+    def getServer(self) -> Server:
+        return self.__server
+
+    def isReady(self) -> bool:
+        return self.__ready
+
+    def run(self):
+        host = socket.gethostname()
+        port = self.getServer().getPort()
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
+            server_socket.bind((host, port))
+            self.__ready = True
+
+            info("CHANNEL_CREATE", terminal=self.getServer().getTerminal(), channel_id=self.getServer().getChannelID(),
+                 secret_key=self.getServer().getSecretKey(), ip=self.getServer().getIP().get("ip"),
+                 port=str(self.getServer().getPort()), public=str(self.getServer().isPublic()))
+
+            server_socket.listen()
+            server_socket.settimeout(1.0)
+
+            while not self.__stop.is_set():
+                try:
+                    # Accept new connection
+                    connection, client_address = server_socket.accept()
+
+                    serverAuthenticateService = ServerConnectionService(self.getServer(), client_address, connection)
+                    serverAuthenticateService.start()
+                except socket.timeout:
+                    pass  # Refresh the stop event flag
+
+            server_socket.close()
+
+            info("CHANNEL_CLOSE", terminal=self.getServer().getTerminal(), channel_id=self.getServer().getChannelID(),
+                 secret_key=self.getServer().getSecretKey(), ip=self.getServer().getIP().get("ip"),
+                 port=str(self.getServer().getPort()), public=str(self.getServer().isPublic()))
+
+        print("Finished thread: Server Host")
+
+
+class ServerConnectionService(Service.ServiceThread):
+    def __init__(self, paramServer: Server, paramClientAddress: tuple, paramConnection):
+        super().__init__(Service.ServiceType.SERVER_CONNECTION)
+
+        self.__server = paramServer
+        self.__connection = paramConnection
+        self.__clientAddress = paramClientAddress
+
+        self.__packetCollector = None
+        self.__user = None
+        self.__stop = Event()
+
+    def getServer(self) -> Server:
+        return self.__server
+
+    """
+            Packet Methods
+    """
+
+    def getPacketCollector(self) -> PacketCollector:
+        return self.__packetCollector
+
+    def __setPacketCollector(self, paramPacketCollector: PacketCollector):
+        self.__packetCollector = paramPacketCollector
+
+    """
+            User
+    """
+
+    def getUser(self) -> User:
+        return self.__user
+
+    def __setUser(self, paramUser: User):
+        self.__user = paramUser
+
+    """
+            Connection Methods
+    """
+
+    def sendPacket(self, paramPacket):
+        sendPacket(paramPacket, (self.getConnection(), self.getUser().getPublicKey()))
+
+    def getConnection(self):
+        return self.__connection
+
+    def stop(self):
+        self.__stop.set()
+
+    def getClientAddress(self) -> tuple:
+        return self.__clientAddress
+
+    def sendInfoToUser(self, paramMessage: str):
+        infoMessagePacket = InfoMessagePacket(paramMessage)
+        self.sendPacket(infoMessagePacket)
+
+    def __challenge(self) -> RSAPublicKey | None:
+        try:
+
+            # Validate challenge
+            challengePacket = self.getPacketCollector().awaitPacket(packet_type=PacketType.C2S_CHALLENGE)
+            if challengePacket is None:
+                return None
+            challenge_packetType, challenge_packetBin = challengePacket
+
+            if challenge_packetBin.getAttribute("CHANNEL_HASH") != self.getServer().getChannelIDHash():
+                raise ValueError("Channel Hash invalid")
+
+            der_key_size = challenge_packetBin.getAttribute("PUBLIC_KEY_LENGTH")
+            der_key = challenge_packetBin.getAttribute("CLIENT_PUBLIC_KEY").to_bytes(der_key_size, byteorder="big")
+
+            client_public_key = serialization.load_der_public_key(
+                der_key,
+                backend=default_backend())
+
+            clientEncryptedChallenge = client_public_key.encrypt(
+                challenge_packetBin.getAttributeBytes("CHALLENGE"),
+                padding.OAEP(
+                    mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                    algorithm=hashes.SHA256(),
+                    label=None
+                )
+            )
+
+            # Send back challenge
+            serverChallengePacket = ServerChallengePacket(self.getServer().getChannelID(),
+                                                          self.getServer().getPublicKey(),
+                                                          clientEncryptedChallenge)
+
+            sendPacket(serverChallengePacket, (self.getConnection(), None))
+
+            # Get registration packet
+            challenge_returnPacket = self.getPacketCollector().awaitPacket(packet_type=PacketType.C2S_CHALLENGE_RETURN)
+            if challenge_returnPacket is None:
+                return None
+            challenge_return_packetType, challenge_return_packetBin = challenge_returnPacket
+
+            if challenge_return_packetBin.getAttribute("CHANNEL_HASH") != self.getServer().getChannelIDHash():
+                raise ValueError("Channel Hash invalid")
+
+            decryptedClientChallenge = self.getServer().getPrivateKey().decrypt(
+                challenge_return_packetBin.getAttributeBytes("SIGNED_CHALLENGE"),
+                padding.OAEP(
+                    mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                    algorithm=hashes.SHA256(),
+                    label=None
+                )
+            )
+
+            if decryptedClientChallenge != serverChallengePacket.getChallengeBytes():
+                raise ValueError("Signed challenge is invalid")
+
+            return client_public_key
+
+        except (ValueError, socket.timeout, socket.error, ConnectionResetError, cryptography.exceptions.NotYetFinalized,
+                cryptography.exceptions.InvalidKey, KeyError):
+            return None
+
+    def __getUserData(self, paramPublicKey: RSAPublicKey) -> str | None:
+        try:
+            # Send user data request
+            serverRequestUserData = RequestUserData()
+            sendPacket(serverRequestUserData, (self.getConnection(), paramPublicKey))
+
+            # Receive user data from client
+            user_dataPacket = self.getPacketCollector().awaitPacket(packet_type=PacketType.C2S_USER_DATA)
+            if user_dataPacket is None:
+                return None
+            userData_packetType, userData_packetBin = user_dataPacket
+
+            if userData_packetType != PacketType.C2S_USER_DATA:
+                raise ValueError("Packet ID invalid")
+
+            displayNameLength = userData_packetBin.getAttribute("DISPLAY_NAME_LENGTH")
+            displayName = intToBase64(userData_packetBin.getAttribute("DISPLAY_NAME"))
+
+            return displayName[:min(displayNameLength, CHANNEL_USER_DISPLAY_NAME_MAX)]
+
+        except (ValueError, socket.timeout, socket.error, ConnectionResetError):
+            return None
+
+    def __startListener(self):
+        try:
+            while not self.__stop.is_set():
+
+                packet =  self.getPacketCollector().awaitPacket()
+                if packet is None:
+                    return
+
+                packetType, packetBin = packet
+
+                match packetType:
+                    case PacketType.C2S_ALIVE_RESPONSE:
+                        self.getServer().getUser(self.getConnection()).renewTime()
+
+                    case PacketType.C2S_USER_LEAVE:
+                        self.getServer().unregisterUser(self.getConnection())
+
+                    case PacketType.C2S_TEXT_MESSAGE:
+                        encodedMessage = packetBin.getAttributeBytes("MESSAGE")
+                        if encodedMessage is None:
+                            continue
+
+                        message = encodedMessage.decode('utf-8')
+                        if len(message) > MAXIMUM_MESSAGE_SIZE:
+                            self.sendInfoToUser(f"Message exceeds maximum size of: {MAXIMUM_MESSAGE_SIZE}")
+                            continue
+
+                        textMessagePacket = TextMessagePacket(self.getUser().getDisplayName(), message)
+                        sendPacket(textMessagePacket, self.getServer().getAllRecipients())
+
+        except (ValueError, socket.timeout, socket.error, ConnectionResetError):
+            return
+
+    def run(self):
+        try:
+            # 1) Start packet collector service
+            packetCollector = PacketCollector(self.getConnection(), self.getServer().getPrivateKey(), self.__stop)
+            packetCollector.start()
+            self.__setPacketCollector(packetCollector)
+
+            # 2) Get public key and user data
+            publicKey = self.__challenge()
+            if publicKey is None:
+                return
+
+            displayName = self.__getUserData(publicKey)
+            if displayName is None:
+                return
+
+            # 3) Register user
+            user = self.getServer().registerUser(displayName, publicKey, self)
+            self.__setUser(user)
+
+            self.__startListener()
+
+            self.getServer().unregisterUser(self.getConnection())
+
+            print("Finished thread: Server Connection")
+
+        except Exception:
+            traceback.print_exc()
+
+        finally:
+            # 4) Close socket
+            self.getConnection().close()
 
 
 class PublishChannelService(Service.ServiceThread):
@@ -380,228 +612,7 @@ class PublishChannelService(Service.ServiceThread):
     def run(self):
         self.__result = self.__publish()
 
-
-class ServerHostService(Service.ServiceThread):
-    def __init__(self, paramServer: Server):
-        super().__init__(Service.ServiceType.SERVER_HOST)
-
-        self.__server = paramServer
-        self.__running = False
-
-    def getServer(self) -> Server:
-        return self.__server
-
-    def isRunning(self) -> bool:
-        return self.__running
-
-    def run(self):
-        host = self.getServer().getIP()['ip']
-        port = self.getServer().getPort()
-
-
-        if self.getServer().isTunneling():
-            host = self.getServer().getIP()['internal_ip']
-
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
-            server_socket.bind((host, port))
-
-            info("CHANNEL_CREATE", terminal=self.getServer().getTerminal(), channel_id=self.getServer().getChannelID(),
-                 secret_key=self.getServer().getSecretKey(), ip=self.getServer().getIP().get("ip"),
-                 port=str(self.getServer().getPort()), public=str(self.getServer().isPublic()))
-
-            self.__running = True
-
-            server_socket.listen()
-
-            while True:
-                # Accept new connection
-                connection, client_address = server_socket.accept()
-
-                serverAuthenticateService = ServerConnectionService(self.getServer(), client_address, connection)
-                serverAuthenticateService.start()
-
-
-class ServerConnectionService(Service.ServiceThread):
-    def __init__(self, paramServer: Server, paramClientAddress: tuple, paramConnection):
-        super().__init__(Service.ServiceType.SERVER_CONNECTION)
-
-        self.__server = paramServer
-        self.__connection = paramConnection
-        self.__clientAddress = paramClientAddress
-
-        self.__packetCollector = None
-        self.__user = None
-
-    def getServer(self) -> Server:
-        return self.__server
-
-    """
-            Packet Methods
-    """
-
-    def getPacketCollector(self) -> PacketCollector:
-        return self.__packetCollector
-
-    def __setPacketCollector(self, paramPacketCollector: PacketCollector):
-        self.__packetCollector = paramPacketCollector
-
-    """
-            User
-    """
-
-    def getUser(self) -> User:
-        return self.__user
-
-    def __setUser(self, paramUser: User):
-        self.__user = paramUser
-
-    """
-            Connection Methods
-    """
-
-    def getClientAddress(self) -> tuple:
-        return self.__clientAddress
-
-    def getConnection(self):
-        return self.__connection
-
-    def sendInfoToUser(self, paramMessage: str):
-        infoMessagePacket = InfoMessagePacket(paramMessage)
-        sendPacket(infoMessagePacket, (self.getConnection(), self.getUser().getPublicKey()))
-
-    def __challenge(self) -> RSAPublicKey | None:
-        try:
-
-            # Validate challenge
-            challenge_packetType, challenge_packetBin = self.getPacketCollector()\
-                .awaitPacket(packet_type=PacketType.C2S_CHALLENGE)
-
-            if challenge_packetBin.getAttribute("CHANNEL_HASH") != self.getServer().getChannelIDHash():
-                raise ValueError("Channel Hash invalid")
-
-            der_key_size = challenge_packetBin.getAttribute("PUBLIC_KEY_LENGTH")
-            der_key = challenge_packetBin.getAttribute("CLIENT_PUBLIC_KEY").to_bytes(der_key_size, byteorder="big")
-
-            client_public_key = serialization.load_der_public_key(
-                der_key,
-                backend=default_backend())
-
-            clientEncryptedChallenge = client_public_key.encrypt(
-                challenge_packetBin.getAttributeBytes("CHALLENGE"),
-                padding.OAEP(
-                    mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                    algorithm=hashes.SHA256(),
-                    label=None
-                )
-            )
-
-            # Send back challenge
-            serverChallengePacket = ServerChallengePacket(self.getServer().getChannelID(),
-                                                          self.getServer().getPublicKey(),
-                                                          clientEncryptedChallenge)
-
-            sendPacket(serverChallengePacket, (self.getConnection(), None))
-
-            # Get registration packet
-            challenge_return_packetType, challenge_return_packetBin = self.getPacketCollector()\
-                .awaitPacket(packet_type=PacketType.C2S_CHALLENGE_RETURN)
-
-            if challenge_return_packetBin.getAttribute("CHANNEL_HASH") != self.getServer().getChannelIDHash():
-                raise ValueError("Channel Hash invalid")
-
-            decryptedClientChallenge = self.getServer().getPrivateKey().decrypt(
-                challenge_return_packetBin.getAttributeBytes("SIGNED_CHALLENGE"),
-                padding.OAEP(
-                    mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                    algorithm=hashes.SHA256(),
-                    label=None
-                )
-            )
-
-            if decryptedClientChallenge != serverChallengePacket.getChallengeBytes():
-                raise ValueError("Signed challenge is invalid")
-
-            return client_public_key
-
-        except (ValueError, socket.timeout, socket.error, ConnectionResetError, cryptography.exceptions.NotYetFinalized,
-                cryptography.exceptions.InvalidKey, KeyError):
-            return None
-
-    def __getUserData(self, paramPublicKey: RSAPublicKey) -> str | None:
-        try:
-            # Send back challenge
-            serverRequestUserData = RequestUserData()
-            sendPacket(serverRequestUserData, (self.getConnection(), paramPublicKey))
-
-            userData_packetType, userData_packetBin = self.getPacketCollector()\
-                .awaitPacket(packet_type=PacketType.C2S_USER_DATA)
-
-            if userData_packetType != PacketType.C2S_USER_DATA:
-                raise ValueError("Packet ID invalid")
-
-            displayNameLength = userData_packetBin.getAttribute("DISPLAY_NAME_LENGTH")
-            displayName = intToBase64(userData_packetBin.getAttribute("DISPLAY_NAME"))
-
-            return displayName[:min(displayNameLength, CHANNEL_USER_DISPLAY_NAME_MAX)]
-
-        except (ValueError, socket.timeout, socket.error, ConnectionResetError):
-            return None
-
-    def __startListener(self):
-        try:
-            while True:
-
-                packetType, packetBin = self.getPacketCollector().awaitPacket()
-
-                match packetType:
-                    case PacketType.C2S_ALIVE_RESPONSE:
-                        self.getServer().getUser(self.getConnection()).renewTime()
-
-                    case PacketType.C2S_TEXT_MESSAGE:
-                        encodedMessage = packetBin.getAttributeBytes("MESSAGE")
-                        if encodedMessage is None:
-                            continue
-
-                        message = encodedMessage.decode('utf-8')
-                        if len(message) > MAXIMUM_MESSAGE_SIZE:
-                            self.sendInfoToUser(f"Message exceeds maximum size of: {MAXIMUM_MESSAGE_SIZE}")
-                            continue
-
-                        textMessagePacket = TextMessagePacket(self.getUser().getDisplayName(), message)
-                        sendPacket(textMessagePacket, self.getServer().getAllRecipients())
-
-
-
-
-        except (ValueError, socket.timeout, socket.error, ConnectionResetError):
-            return
-
-    def run(self):
-        try:
-            packetCollector = PacketCollector(self.getConnection(), self.getServer().getPrivateKey())
-            packetCollector.start()
-            self.__setPacketCollector(packetCollector)
-
-            publicKey = self.__challenge()
-
-            if publicKey is None:
-                return
-
-            displayName = self.__getUserData(publicKey)
-
-            if displayName is None:
-                return
-
-            # Save user
-            user = self.getServer().registerUser(self.getConnection(), displayName, publicKey, self)
-            self.__setUser(user)
-
-            self.__startListener()
-
-            self.getServer().unregisterUser(self.getConnection())
-
-        except Exception:
-            traceback.print_exc()
+        print("Finished thread: Publish")
 
 
 def generateRandomSequence(length: tuple | int) -> str:
@@ -682,8 +693,6 @@ def createChannelInfoBin(paramServer: Server) -> Bin:
     ip_attribute_size = channelInfoBin.getAttributeSize("IP")
 
     if paramServer.isTunneling():
-
-        assert paramServer.getTunnelURL() is not None
 
         channelInfoBin.setAttribute("IP_TYPE", 2)
 

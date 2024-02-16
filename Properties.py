@@ -19,6 +19,7 @@ CHANNEL_USER_DISPLAY_NAME_MAX  = 16                                 # Number of 
 CHANNEL_ID_LENGTH              = (14, 20)                           # Channel ID length (generated)
 CHANNEL_SECRET_KEY_LENGTH      = (20, 28)                           # Channel Secret Key (generated)
 DEFAULT_PORT_SERVER            = 28961                              # Default server port
+DEFAULT_PORT_CLIENT            = 28962                              # Default port of client
 NAMES_LIST_FILE                = "names_list.txt"                   # List of names for generated names
 TERMINAL_VERSION               = "beta0.1"                          # Terminal and Client version
 PACKET_MAX_SIZE                = 8192                               # Packet size maximum (bits)

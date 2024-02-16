@@ -143,7 +143,7 @@ class Bin:
             bit_size = self.__getBinaryLength(total)
             dynamicBinSize = 0
             i = 0
-            while total >> (v := (bit_size - i * 8)) - 1:
+            while ((bit_size - i * 8) - 1) >= 0 and (total >> (v := (bit_size - i * 8)) - 1):
                 importantBits = (total >> (v - 8)) & 0x7F
                 dynamicBinSize = (dynamicBinSize << 7) + importantBits
                 total = total & (2 ** (v - 8) - 1)

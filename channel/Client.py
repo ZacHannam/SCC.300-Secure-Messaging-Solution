@@ -7,6 +7,7 @@ from cryptography.hazmat.primitives.asymmetric import padding
 import hashlib
 import socket
 import traceback
+from threading import Event
 
 from Properties import CHANNEL_USER_DISPLAY_NAME_MAX, NAMES_LIST_FILE
 from utils.codecs.Base64 import BASE_64_ALPHABET
@@ -20,6 +21,7 @@ from channel.packet.client.C2S_ReturnChallengePacket import ClientChallengeRetur
 from channel.packet.client.C2S_UserDataPacket import UserDataPacket
 from channel.packet.client.C2S_AliveReturnPacket import AliveReturnPacket
 from channel.packet.client.C2S_TextMessagePacket import TextMessagePacket
+from channel.packet.client.C2S_UserLeavePacket import UserLeavePacket
 from Language import info
 
 
@@ -81,15 +83,18 @@ class Client:
 
         self.__privateKey = private_key
 
-    """
-            SERVER
-    """
-
     def setServerPublicKey(self, paramPublicKey: RSAPublicKey):
         self.__serverPublicKey = paramPublicKey
 
     def getServerPublicKey(self) -> RSAPublicKey:
         return self.__serverPublicKey
+
+    """
+            SERVER
+    """
+
+    def leaveServer(self):
+        self.getClientConnection().stop()
 
     def sendMessage(self, paramMessage):
         self.getClientConnection().sendTextMessage(paramMessage)
@@ -103,8 +108,12 @@ class Client:
 
     def __connectToServer(self):
 
-        self.__clientConnectService = ClientConnectionService(self)
-        self.__clientConnectService.start()
+        clientConnectService = ClientConnectionService(self)
+        clientConnectService.start()
+        self.__clientConnectService = clientConnectService
+
+        while not clientConnectService.isReady():
+            continue
 
 
 class ClientConnectionService(Service.ServiceThread):
@@ -116,9 +125,14 @@ class ClientConnectionService(Service.ServiceThread):
 
         self.__connection.connect((self.getClient().getServerIP(), self.getClient().getServerPort()))
         self.__packetCollector = None
+        self.__stop = Event()
+        self.__ready = False
 
     def getClient(self) -> Client:
         return self.__client
+
+    def isReady(self):
+        return self.__ready
 
     """
             Packets
@@ -141,16 +155,22 @@ class ClientConnectionService(Service.ServiceThread):
     def getConnection(self):
         return self.__connection
 
+    def stop(self):
+        userLeavePacket = UserLeavePacket()
+        self.sendPacket(userLeavePacket)
 
-    def __sendUserDataPacket(self):
-        userDataPacket = UserDataPacket(self.getClient().getClientDisplayName())
-        self.sendPacket(userDataPacket)
+        self.__stop.set()
 
     def sendTextMessage(self, paramTextMessage):
         textMessagePacket = TextMessagePacket(paramTextMessage)
         self.sendPacket(textMessagePacket)
 
-    def __challenge(self) -> RSAPublicKey:
+
+    def __sendUserDataPacket(self):
+        userDataPacket = UserDataPacket(self.getClient().getClientDisplayName())
+        self.sendPacket(userDataPacket)
+
+    def __challenge(self) -> RSAPublicKey | None:
         # Send authentication packet
 
         clientChallengePacket = ClientChallengePacket(self.getClient().getChannelID(),
@@ -159,7 +179,10 @@ class ClientConnectionService(Service.ServiceThread):
         sendPacket(clientChallengePacket, (self.getConnection(), None))
 
         # Validate challenge
-        challenge_packetType, challenge_packetBin = self.getPacketCollector().awaitPacket(PacketType.S2C_CHALLENGE)
+        challengePacket = self.getPacketCollector().awaitPacket(PacketType.S2C_CHALLENGE)
+        if challengePacket is None:
+            return None
+        challenge_packetType, challenge_packetBin = challengePacket
 
         if challenge_packetBin.getAttribute("CHANNEL_HASH") != self.getClient().getChannelIDHash():
             raise ValueError("Channel Hash invalid")
@@ -204,13 +227,28 @@ class ClientConnectionService(Service.ServiceThread):
 
     def __startListener(self):
         try:
-            while True:
+            while not self.__stop.is_set():
 
-                packetType, packetBin =  self.getPacketCollector().awaitPacket()
+                packet =  self.getPacketCollector().awaitPacket()
+                if packet is None:
+                    return
+
+                packetType, packetBin = packet
 
                 match packetType:
                     case PacketType.S2C_REQUEST_USER_DATA:
                         self.__sendUserDataPacket()
+
+                    case PacketType.S2C_CLIENT_DISCONNECT:
+                        info("CHANNEL_CLIENT_DISCONNECT", channel_id=self.getClient().getChannelID())
+
+                        encodedReason = packetBin.getAttributeBytes("REASON")
+                        if not (encodedReason is None or len(encodedReason) == 0):
+                            reason = encodedReason.decode()
+                            info("CHANNEL_CLIENT_DISCONNECT_REASON", channel_id=self.getClient().getChannelID(),
+                                 reason=reason)
+
+                        return  # User has been disconnect so return
 
                     case PacketType.S2C_USER_JOIN:
 
@@ -256,19 +294,30 @@ class ClientConnectionService(Service.ServiceThread):
 
     def run(self):
         try:
-            packetCollector = PacketCollector(self.getConnection(), self.getClient().getPrivateKey())
+            # 1) Start packet collector service
+            packetCollector = PacketCollector(self.getConnection(), self.getClient().getPrivateKey(), self.__stop)
             packetCollector.start()
             self.__setPacketCollector(packetCollector)
 
+            # 2) Set public key
+            public_key = self.__challenge()
+            if public_key is None:
+                return
+            self.getClient().setServerPublicKey(public_key)
 
-            self.getClient().setServerPublicKey(self.__challenge())
+            self.__ready = True
 
+            # 3) Start packet collection service
             self.__startListener()
 
-            self.getConnection().close()
+            print("Finished thread: Client")
 
         except Exception:
             traceback.print_exc()
+
+        finally:
+            # 4) Close socket
+            self.getConnection().close()
 
 
 def generateDisplayName(max_length=CHANNEL_USER_DISPLAY_NAME_MAX) -> str:
@@ -330,7 +379,5 @@ def getClientFromBin(paramTerminal: str, paramChannelID: str, paramBin: Bin,
             raise RuntimeError("Should not reach here")
 
     port = paramBin.getAttribute("PORT")
-
-    print(paramTerminal, paramChannelID, ip, port)
 
     return Client(paramTerminal, paramChannelID, ip, port, client_displayName=client_displayName)

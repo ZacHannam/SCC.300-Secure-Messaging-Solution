@@ -1,7 +1,7 @@
 from utils.BinarySequencer import ArbitraryValue
 
 """
-            PACKETS ACCEPTING SIZE OF 16384 (16376 USABLE) 2kB
+            Authentication Packets
             - Unencrypted
 """
 
@@ -20,14 +20,13 @@ C2S_CHALLENGE_RETURN_DIMENSIONS = [( "CHANNEL_HASH"      , 256  ),
                                    ( "SIGNED_CHALLENGE"  , 4096 )]
 
 """
-            PACKETS ACCEPTING SIZE OF 512 (504 USABLE) 0.5kB
+            Standard Packets
             - Encrypted
 """
 
-S2C_REQUEST_USER_DATA = []
-
-C2S_USER_DATA = [( "DISPLAY_NAME_LENGTH" , ArbitraryValue.DYNAMIC ),
-                 ( "DISPLAY_NAME"        , ArbitraryValue.DYNAMIC )]
+"""
+        Server -> Client
+"""
 
 S2C_USER_JOIN = [( "DISPLAY_NAME_LENGTH" , ArbitraryValue.DYNAMIC ),
                  ( "DISPLAY_NAME"        , ArbitraryValue.DYNAMIC )]
@@ -35,13 +34,26 @@ S2C_USER_JOIN = [( "DISPLAY_NAME_LENGTH" , ArbitraryValue.DYNAMIC ),
 S2C_USER_LEAVE = [( "DISPLAY_NAME_LENGTH" , ArbitraryValue.DYNAMIC),
                   ( "DISPLAY_NAME"        , ArbitraryValue.DYNAMIC )]
 
-S2C_ALIVE = []
-
-C2S_ALIVE_RESPONSE = []
-
-C2S_TEXT_MESSAGE  = [("MESSAGE", ArbitraryValue.DYNAMIC)]
-
 S2C_TEXT_MESSAGE = [( "DISPLAY_NAME"         , ArbitraryValue.DYNAMIC ),
                     ( "MESSAGE"             , ArbitraryValue.DYNAMIC  )]
 
 S2C_INFO_MESSAGE  = [("MESSAGE", ArbitraryValue.DYNAMIC)]
+
+S2C_CLIENT_DISCONNECT = [("REASON", ArbitraryValue.DYNAMIC)]
+
+S2C_REQUEST_USER_DATA = []
+
+S2C_ALIVE = []
+
+"""
+        Client -> Server
+"""
+
+C2S_USER_DATA = [( "DISPLAY_NAME_LENGTH" , ArbitraryValue.DYNAMIC ),
+                 ( "DISPLAY_NAME"        , ArbitraryValue.DYNAMIC )]
+
+C2S_TEXT_MESSAGE  = [("MESSAGE", ArbitraryValue.DYNAMIC)]
+
+C2S_ALIVE_RESPONSE = []
+
+C2S_USER_LEAVE = []

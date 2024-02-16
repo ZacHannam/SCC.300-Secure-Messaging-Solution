@@ -16,40 +16,43 @@ from Properties import PACKET_MAX_SIZE
 
 
 class PacketType(Enum):
-    C2S_CHALLENGE               = (0x01, C2S_CHALLENGE_DIMENSIONS)  # Sent to server to challenge / get public key
-    S2C_CHALLENGE               = (0x02, S2C_CHALLENGE_DIMENSIONS)  # Sent to client to challenge / send public key
-    C2S_CHALLENGE_RETURN        = (0x03, C2S_CHALLENGE_RETURN_DIMENSIONS)  # Sent to server to validate challenge
+    C2S_CHALLENGE = (0x01, C2S_CHALLENGE_DIMENSIONS)  # Sent to server to challenge / get public key
+    S2C_CHALLENGE = (0x02, S2C_CHALLENGE_DIMENSIONS)  # Sent to client to challenge / send public key
+    C2S_CHALLENGE_RETURN = (0x03, C2S_CHALLENGE_RETURN_DIMENSIONS)  # Sent to server to validate challenge
 
-    S2C_REQUEST_USER_DATA       = (0x11, S2C_REQUEST_USER_DATA)  # Ask the client for user data
-    C2S_USER_DATA               = (0x12, C2S_USER_DATA)
+    S2C_REQUEST_USER_DATA = (0x11, S2C_REQUEST_USER_DATA)  # Ask the client for user data
+    C2S_USER_DATA = (0x12, C2S_USER_DATA)
 
-    S2C_ALIVE                   = (0x21, S2C_ALIVE)  # Ask the client if they are alive
-    C2S_ALIVE_RESPONSE          = (0x22, C2S_ALIVE_RESPONSE)  # Respond to the server if they are alive
+    S2C_ALIVE = (0x21, S2C_ALIVE)  # Ask the client if they are alive
+    C2S_ALIVE_RESPONSE = (0x22, C2S_ALIVE_RESPONSE)  # Respond to the server if they are alive
 
-    S2C_USER_JOIN               = (0x31, S2C_USER_JOIN)  # Sent to client when user joins
-    S2C_USER_LEAVE              = (0x32, S2C_USER_LEAVE)  # Sent to all clients when someone leaves channel
+    S2C_USER_JOIN = (0x31, S2C_USER_JOIN)  # Sent to client when user joins
+    S2C_USER_LEAVE = (0x32, S2C_USER_LEAVE)  # Sent to all clients when someone leaves channel
 
-    S2C_TEXT_MESSAGE            = (0x41, S2C_TEXT_MESSAGE)  # Sent to client to send a message
-    C2S_TEXT_MESSAGE            = (0x42, C2S_TEXT_MESSAGE)  # Sent to server to send a message
+    S2C_TEXT_MESSAGE = (0x41, S2C_TEXT_MESSAGE)  # Sent to client to send a message
+    C2S_TEXT_MESSAGE = (0x42, C2S_TEXT_MESSAGE)  # Sent to server to send a message
 
-    S2C_INFO_MESSAGE            = (0x51, S2C_INFO_MESSAGE)  # Send info to a client
+    S2C_INFO_MESSAGE = (0x51, S2C_INFO_MESSAGE)  # Send info to a client
+
+    S2C_CLIENT_DISCONNECT = (0x61, S2C_CLIENT_DISCONNECT)  # Sent to client to kick them from the server
+    C2S_USER_LEAVE = (0x62, C2S_USER_LEAVE)  # Sent to server when user leaves
 
 
 PACKET_TYPE_ENUMERATION = dict([(packet.value[0], packet) for packet in PacketType])
 PACKET_TYPE_SIZE = 8
 PACKET_MAX_SIZE_BYTES = int(math.ceil(PACKET_MAX_SIZE / 8))
 
-PACKET_BIN_ENCRYPTED   = [( "CONTENT"        , 4040  ),
-                          ( "PACKET_AUTH"    , 16    ),
-                          ( "PACKET_SIZE"    , 16    ),
-                          ( "PACKET_NUMBER"  , 16    ),
-                          ( "PACKET_ID"      , 8     )]
+PACKET_BIN_ENCRYPTED = [("CONTENT", 4040),
+                        ("PACKET_AUTH", 16),
+                        ("PACKET_SIZE", 16),
+                        ("PACKET_NUMBER", 16),
+                        ("PACKET_ID", 8)]
 
-PACKET_BIN_UNENCRYPTED = [( "CONTENT"        , 8136  ),
-                          ( "PACKET_AUTH"    , 16    ),
-                          ( "PACKET_SIZE"    , 16    ),
-                          ( "PACKET_NUMBER"  , 16    ),
-                          ( "PACKET_ID"       , 8    )]
+PACKET_BIN_UNENCRYPTED = [("CONTENT", 8136),
+                          ("PACKET_AUTH", 16),
+                          ("PACKET_SIZE", 16),
+                          ("PACKET_NUMBER", 16),
+                          ("PACKET_ID", 8)]
 
 
 class Packet(ABC):
@@ -80,22 +83,22 @@ class Packet(ABC):
         packet_result = packet.getResult()
         packet_length = packet.getBinSize()
 
-        packets_results = [(packet_result >> (i*contentLength)) & ((2**contentLength)-1)
-                           for i in range(math.ceil(packet_length / contentLength)-1, -1, -1)]
+        packets_results = [(packet_result >> (i * contentLength)) & ((2 ** contentLength) - 1)
+                           for i in range(math.ceil(packet_length / contentLength) - 1, -1, -1)]
         if not len(packets_results):
             packets_results = [0]
 
-        assert len(packets_results) < (2**maxPacketSize)  # <=  (2**maxPacketSize)-1
+        assert len(packets_results) < (2 ** maxPacketSize)  # <=  (2**maxPacketSize)-1
 
         packetBins = [Bin(PACKET_BIN_ENCRYPTED if self.isEncrypted() else PACKET_BIN_UNENCRYPTED)
                       for _ in packets_results]
 
         for index, (packet_bin, packet_result) in enumerate(zip(packetBins, packets_results)):
-            packet_bin.setAttribute( "CONTENT"       , packet_result                  )
-            packet_bin.setAttribute( "PACKET_AUTH"   , packet_auth                    )
-            packet_bin.setAttribute( "PACKET_SIZE"   , len(packetBins)                )
-            packet_bin.setAttribute( "PACKET_NUMBER" , index + 1                      )
-            packet_bin.setAttribute( "PACKET_ID"     , self.getPacketType().value[0]  )
+            packet_bin.setAttribute("CONTENT", packet_result)
+            packet_bin.setAttribute("PACKET_AUTH", packet_auth)
+            packet_bin.setAttribute("PACKET_SIZE", len(packetBins))
+            packet_bin.setAttribute("PACKET_NUMBER", index + 1)
+            packet_bin.setAttribute("PACKET_ID", self.getPacketType().value[0])
 
         return self.isEncrypted(), packetBins
 
@@ -122,6 +125,7 @@ class PacketSender(Service.ServiceThread):
         isEncrypted, packetBins = self.getPacket().getPackets()
         assert (isEncrypted and self.getClientPublicKey() is not None) or not isEncrypted
 
+        packetsToSend = []
         if isEncrypted:
             for packet in packetBins:
 
@@ -143,18 +147,25 @@ class PacketSender(Service.ServiceThread):
                     )
 
                 assert len(packetData) == PACKET_MAX_SIZE_BYTES
-                self.getConnection().sendall(packetData)
+                packetsToSend.append(packetData)
 
         else:
             for packet in packetBins:
                 packetData = packet.getResultBytes(sizeBytes=PACKET_MAX_SIZE_BYTES)
 
                 assert len(packetData) == PACKET_MAX_SIZE_BYTES
+                packetsToSend.append(packetData)
+
+        try:
+            for packetData in packetsToSend:
                 self.getConnection().sendall(packetData)
+        except BrokenPipeError:
+            pass  # If there is a broken pipe simply just stop trying. It is probably where the client
+            # closes the connection before we know. They wont be sent after alive checker removes them
 
 
 class PacketCollector(Service.ServiceThread):
-    def __init__(self, paramSocket, paramPrivateKey):
+    def __init__(self, paramSocket, paramPrivateKey, paramStopEvent):
         super().__init__(Service.ServiceType.PACKET_COLLECTOR)
 
         self.__privateKey = paramPrivateKey
@@ -162,6 +173,7 @@ class PacketCollector(Service.ServiceThread):
         self.__packets = {}  # (packetAuth, packetType, packetSize) -> [(packetNumber, packetContent), ...]
         self.__finalisedPacket = []  # (packetType, packetBin)
         self.__finalisedPacketLock = Lock()
+        self.__stop = paramStopEvent
 
     def getSocket(self):
         return self.__socket
@@ -178,8 +190,8 @@ class PacketCollector(Service.ServiceThread):
     def __getFinalisedPacketsLock(self) -> Lock:
         return self.__finalisedPacketLock
 
-    def awaitPacket(self, packet_type=None) -> tuple:
-        while (packet := self.getNextPacket(packet_type=packet_type)) is None:
+    def awaitPacket(self, packet_type=None) -> None | tuple:
+        while (not self.__stop.is_set()) and ((packet := self.getNextPacket(packet_type=packet_type)) is None):
             continue
         return packet
 
@@ -196,8 +208,14 @@ class PacketCollector(Service.ServiceThread):
 
     def run(self):
         try:
-            while len((data := self.getSocket().recv(PACKET_MAX_SIZE_BYTES))) == PACKET_MAX_SIZE_BYTES:
+            while not self.__stop.is_set():
                 # attempt decrypt on data if there is a public key
+
+                try:
+                    if len((data := self.getSocket().recv(PACKET_MAX_SIZE_BYTES))) != PACKET_MAX_SIZE_BYTES:
+                        continue
+                except OSError:  # Socket closed so can return this
+                    return
 
                 if self.getPrivateKey() is not None:
 
@@ -227,7 +245,7 @@ class PacketCollector(Service.ServiceThread):
                 else:
                     raise RuntimeError(f"Failed to decode packet of length ({len(data)})")
 
-                packetContent, packetAuth, packetSize, packetNumber, packetID = packet_bin.\
+                packetContent, packetAuth, packetSize, packetNumber, packetID = packet_bin. \
                     getAttribute("CONTENT", "PACKET_AUTH", "PACKET_SIZE", "PACKET_NUMBER", "PACKET_ID")
 
                 packetType = getPacketTypeFromPacketID(packetID)
@@ -253,7 +271,7 @@ class PacketCollector(Service.ServiceThread):
                     contents = dict(self.getPackets().get(key))
                     totalContents, packetsScanned = 0, 0
                     for index in range(packetSize):
-                        if not (index+1) in contents:
+                        if not (index + 1) in contents:
                             break
 
                         content = contents.get(index + 1)
@@ -268,6 +286,8 @@ class PacketCollector(Service.ServiceThread):
 
         except Exception:
             traceback.print_exc()
+        finally:
+            print("Finished thread: Packet Collector")
 
 
 def getPacketTypeFromPacketID(paramPacketType: int) -> PacketType | None:
@@ -287,7 +307,6 @@ def getPacketDimensionsFromPacketType(paramPacketType: int) -> list | None:
 
 
 def sendPacket(paramPacket: Packet, paramConnection):
-
     if isinstance(paramConnection, tuple):
         connection, public_key = paramConnection
         packetSender = PacketSender(paramPacket, connection, public_key)
