@@ -310,8 +310,6 @@ class ClientConnectionService(Service.ServiceThread):
             # 3) Start packet collection service
             self.__startListener()
 
-            print("Finished thread: Client")
-
         except Exception:
             traceback.print_exc()
 

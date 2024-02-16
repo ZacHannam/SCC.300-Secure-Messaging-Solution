@@ -286,8 +286,6 @@ class PacketCollector(Service.ServiceThread):
 
         except Exception:
             traceback.print_exc()
-        finally:
-            print("Finished thread: Packet Collector")
 
 
 def getPacketTypeFromPacketID(paramPacketType: int) -> PacketType | None:

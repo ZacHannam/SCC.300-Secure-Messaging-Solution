@@ -65,13 +65,15 @@ class User:
 
 class Server:
     def __init__(self, paramTerminal: str, channel_id=None, secret_key=None, port=DEFAULT_PORT_SERVER,
-                 tunnel=None, public=False):
+                 tunnel=None, public=False, max_users=20, banned_users=None):
         self.__terminal = paramTerminal
 
         self.__channelID = channel_id if channel_id is not None else generateRandomChannelID()
         self.__secretKeyBin = secret_key if secret_key is not None else generateRandomSecretKey()
+        self.__bannedUsers = [] if banned_users is None else banned_users
         self.__port = port
         self.__public = public
+        self.__maxNumberOfUsers = max_users
 
         self.__stop = False
         self.__users = {}
@@ -112,6 +114,12 @@ class Server:
 
     def getServerAliveService(self):
         return self.__serverAliveService
+
+    def getMaxNumberOfUsers(self) -> int:
+        return self.__maxNumberOfUsers
+
+    def setMaxNumberOfUsers(self, paramNumberOfUsers):
+        self.__maxNumberOfUsers = paramNumberOfUsers
 
     """
                 IP
@@ -190,8 +198,21 @@ class Server:
                 SERVER USERS
     """
 
-    def getUser(self, paramIP) -> User:
-        return self.__users.get(paramIP, None)
+    def getBannedUsers(self) -> list[str]:
+        return self.__bannedUsers
+
+    def banUser(self, paramConnection):
+        self.__bannedUsers.append(paramConnection.getsockname[0])
+        self.unregisterUser(paramConnection)
+
+    def getUser(self, paramConnection) -> User:
+        return self.__users.get(paramConnection, None)
+
+    def getUsers(self) -> dict:
+        return self.__users
+
+    def getNumberOfUsers(self) -> int:
+        return len(self.getUsers())
 
     def getAllRecipients(self) -> list:
         return [(user.getServerConnectionService().getConnection(), user.getPublicKey())
@@ -206,8 +227,8 @@ class Server:
 
         return user
 
-    def isUser(self, paramIP: tuple) -> bool:
-        return paramIP in self.__users
+    def isUser(self, paramConnection) -> bool:
+        return paramConnection in self.__users
 
     def unregisterUser(self, paramConnection: tuple, disconnect_reason=None):
         if paramConnection in self.__users.keys():
@@ -228,9 +249,6 @@ class Server:
         for key in list(self.__users.keys())[:]:
             self.unregisterUser(key, disconnect_reason)
 
-    def getUsers(self) -> dict:
-        return self.__users
-
     """
                 SERVER
     """
@@ -238,8 +256,6 @@ class Server:
     def stop(self):
         self.unregisterAllUsers(disconnect_reason="Server stopping.")
         self.getServerAliveService().stop()
-
-        print("Stopping server host service")
         self.getServerHostService().stop()
 
     def __startServer(self):
@@ -293,17 +309,14 @@ class ServerAliveService(Service.ServiceThread):
         while not self.__stop.is_set():
 
             currentTime = int(time.time())
-
-            for user in self.getServer().getUsers().values():
-                if user.getLastAliveTime() + (ALIVE_TIME * 2) < currentTime:
-                    self.getServer().unregisterUser(user, "Timed out.")
+            for user in list(self.getServer().getUsers().values())[:]:      # Stop concurrent modification
+                if user.getLastAliveTime() + ALIVE_TIME < currentTime:
+                    self.getServer().unregisterUser(user.getServerConnectionService().getConnection(),
+                                                    "Timed out.")
 
             sendPacket(AlivePacket(), self.getServer().getAllRecipients())
 
             self.__stop.wait(ALIVE_TIME)
-
-        print("Finished thread: Alive")
-
 
 class ServerHostService(Service.ServiceThread):
     def __init__(self, paramServer: Server):
@@ -314,7 +327,6 @@ class ServerHostService(Service.ServiceThread):
         self.__stop = Event()
 
     def stop(self):
-        print("---Set stop active in host service")
         self.__stop.set()
 
     def getServer(self) -> Server:
@@ -353,8 +365,6 @@ class ServerHostService(Service.ServiceThread):
             info("CHANNEL_CLOSE", terminal=self.getServer().getTerminal(), channel_id=self.getServer().getChannelID(),
                  secret_key=self.getServer().getSecretKey(), ip=self.getServer().getIP().get("ip"),
                  port=str(self.getServer().getPort()), public=str(self.getServer().isPublic()))
-
-        print("Finished thread: Server Host")
 
 
 class ServerConnectionService(Service.ServiceThread):
@@ -497,6 +507,18 @@ class ServerConnectionService(Service.ServiceThread):
         except (ValueError, socket.timeout, socket.error, ConnectionResetError):
             return None
 
+    def __getUserErrors(self) -> list[str]:
+        userErrors = []
+        if (self.getServer().getNumberOfUsers() + 1) > self.getServer().getMaxNumberOfUsers():
+            userErrors.append("Server is full")
+
+        if self.getConnection().getsockname()[0] in self.getServer().getBannedUsers():
+            userErrors.append("You are banned from this channel.")
+
+        return userErrors
+
+
+
     def __startListener(self):
         try:
             while not self.__stop.is_set():
@@ -537,24 +559,31 @@ class ServerConnectionService(Service.ServiceThread):
             packetCollector.start()
             self.__setPacketCollector(packetCollector)
 
-            # 2) Get public key and user data
+            # 2) Get public key
             publicKey = self.__challenge()
             if publicKey is None:
                 return
 
+            # 3) Get user info (just display name but expandable for later)
             displayName = self.__getUserData(publicKey)
             if displayName is None:
                 return
 
-            # 3) Register user
+            # 4) Check if user passes checks i.e bans, and number of people online
+            user_errors = self.__getUserErrors()
+
+            if len(user_errors) > 0:
+                clientDisconnectPacket = ClientDisconnectPacket(", ".join(user_errors))
+                sendPacket(clientDisconnectPacket, (self.getConnection(), publicKey))
+                return
+
+            # 5) Register user
             user = self.getServer().registerUser(displayName, publicKey, self)
             self.__setUser(user)
 
             self.__startListener()
 
             self.getServer().unregisterUser(self.getConnection())
-
-            print("Finished thread: Server Connection")
 
         except Exception:
             traceback.print_exc()
@@ -611,8 +640,6 @@ class PublishChannelService(Service.ServiceThread):
 
     def run(self):
         self.__result = self.__publish()
-
-        print("Finished thread: Publish")
 
 
 def generateRandomSequence(length: tuple | int) -> str:
