@@ -1,4 +1,6 @@
 import random
+
+import cryptography.exceptions
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -8,7 +10,7 @@ import hashlib
 import socket
 from threading import Event
 
-from Properties import CHANNEL_USER_DISPLAY_NAME_MAX, NAMES_LIST_FILE, TERMINAL_PROTOCOL
+from Properties import CHANNEL_USER_DISPLAY_NAME_MAX, NAMES_LIST_FILE, TERMINAL_PROTOCOL, IPType
 from services.terminal.TerminalScanProcess import TerminalScanService
 from utils.codecs.Base64 import BASE_64_ALPHABET
 from utils.BinarySequencer import Bin, getBinSize
@@ -25,7 +27,7 @@ from channel.packet.client.C2S_UserLeavePacket import UserLeavePacket
 from Language import info
 
 
-class ClientException(RuntimeError):
+class ClientException(Exception):
     class Exception:
         def __init__(self, paramFatal: bool, paramMessage: str):
             """
@@ -63,6 +65,10 @@ class ClientException(RuntimeError):
     FAILED_TO_CREATE_CLIENT_FROM_BIN = Exception(False, "Failed to create client from binary sequencer")
     INVALID_IP_TYPE = Exception(False, "Invalid IP type encountered")
     NO_CHANNEL_ON_TERMINAL = Exception(False, "Failed to find channel on terminal")
+    FAILED_TO_AUTHENTICATE = Exception(True, "Client failed to authenticate")
+    CRYPTOGRAPHY_EXCEPTION = Exception(True, "Cryptography failed")
+    FAILED_TO_CONNECT_TIMEOUT = Exception(True, "Failed to connect to server (Timed out)")
+    FAILED_TO_LEAVE_SERVER = Exception(True, "Failed to leave server")
 
     def __init__(self, paramStopSignal: Event | None, paramException: Exception):
         """
@@ -70,7 +76,8 @@ class ClientException(RuntimeError):
         :param paramStopSignal: The stop signal for the client
         :param paramException: The exception being used
         """
-        super(paramException.getMessage())  # Set the exception message
+        super().__init__()
+        self.message = paramException.getMessage()  # Set the exception message
 
         if paramException.isFatal() and paramStopSignal is not None:  # Stop the client threads if it is fatal
             paramStopSignal.set()
@@ -248,65 +255,77 @@ class ClientConnectionService(Service.ServiceThread):
         :return: None
         """
 
-        """ 1) Client Authenticate Server """
-        # 1.1) Send the client authentication packet to the server
-        clientAuthenticatePacket = ClientAuthenticatePacket(self.getChannelID(),
-                                                            self.getClientPublicKey())
+        try:
+            """ 1) Client Authenticate Server """
+            # 1.1) Send the client authentication packet to the server
+            clientAuthenticatePacket = ClientAuthenticatePacket(self.getChannelID(),
+                                                                self.getClientPublicKey())
 
-        sendPacket(clientAuthenticatePacket, (self.getConnection(), None))
+            sendPacket(clientAuthenticatePacket, (self.getConnection(), None))
 
-        """ 2) Server Authenticate Client """
-        # 2.1) Validate the server challenge
-        authenticatePacket = self.getPacketCollector().awaitPacket(PacketType.S2C_AUTHENTICATE)  # Collect packet
-        if authenticatePacket is None:  # Check if the packet is None
-            raise ClientException(self.getStopEvent(), ClientException.FAILED_TO_COLLECT_PACKET)
+            """ 2) Server Authenticate Client """
+            # 2.1) Validate the server challenge
+            authenticatePacket = self.getPacketCollector().awaitPacket(PacketType.S2C_AUTHENTICATE)  # Collect packet
+            if self.getStopEvent().is_set():
+                return
+            if authenticatePacket is None:  # Check if the packet is None
+                raise ClientException(self.getStopEvent(), ClientException.FAILED_TO_COLLECT_PACKET)
 
-        authenticate_packetType, authenticate_packetBin = authenticatePacket  # Unpack the packet
+            authenticate_packetType, authenticate_packetBin = authenticatePacket  # Unpack the packet
 
-        # 2.2) Check the channel ID hash
-        if authenticate_packetBin.getAttribute("CHANNEL_HASH") != self.getChannelIDHash():  # Validate channel ID hash
-            raise ClientException(self.getStopEvent(), ClientException.INVALID_CHANNEL_ID_HASH)
+            # 2.2) Check the channel ID hash
+            if authenticate_packetBin.getAttribute("CHANNEL_HASH") != self.getChannelIDHash():
+                raise ClientException(self.getStopEvent(), ClientException.INVALID_CHANNEL_ID_HASH)
 
-        # 2.3) Decrypt the client challenge sent to server and sent back encrypted
-        decryptedClientChallenge = self.getClientPrivateKey().decrypt(
-            authenticate_packetBin.getAttributeBytes("SIGNED_CHALLENGE"),
-            padding.OAEP(
-                mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                algorithm=hashes.SHA256(),
-                label=None
+            # 2.3) Decrypt the client challenge sent to server and sent back encrypted
+            decryptedClientChallenge = self.getClientPrivateKey().decrypt(
+                authenticate_packetBin.getAttributeBytes("SIGNED_CHALLENGE"),
+                padding.OAEP(
+                    mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                    algorithm=hashes.SHA256(),
+                    label=None
+                )
             )
-        )
 
-        # 2.4) Check if the decrypted challenge is the same as the sent challenge
-        if decryptedClientChallenge != clientAuthenticatePacket.getChallengeBytes():
-            raise ClientException(self.getStopEvent(), ClientException.SERVER_FAILED_CHALLENGE)
+            # 2.4) Check if the decrypted challenge is the same as the sent challenge
+            if decryptedClientChallenge != clientAuthenticatePacket.getChallenge():
+                raise ClientException(self.getStopEvent(), ClientException.SERVER_FAILED_CHALLENGE)
 
-        # 2.5) Load the server public key
-        der_key_size = authenticate_packetBin.getAttribute("PUBLIC_KEY_LENGTH")
-        der_key = authenticate_packetBin.getAttribute("SERVER_PUBLIC_KEY").to_bytes(der_key_size, byteorder="big")
+            # 2.5) Load the server public key
+            der_key_size = authenticate_packetBin.getAttribute("PUBLIC_KEY_LENGTH")
+            der_key = authenticate_packetBin.getAttribute("SERVER_PUBLIC_KEY").to_bytes(der_key_size, byteorder="big")
 
-        server_public_key = serialization.load_der_public_key(
-            der_key,
-            backend=default_backend())
+            server_public_key = serialization.load_der_public_key(
+                der_key,
+                backend=default_backend())
 
-        self.__serverPublicKey = server_public_key  # Set the server public key
+            self.__serverPublicKey = server_public_key  # Set the server public key
 
-        """ 3) Client Authenticate Server Response """
-        # 3.1) Encrypt the server challenge to send it back
-        encryptedServerChallenge = server_public_key.encrypt(
-            authenticate_packetBin.getAttributeBytes("CHALLENGE"),
-            padding.OAEP(
-                mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                algorithm=hashes.SHA256(),
-                label=None
+            """ 3) Client Authenticate Server Response """
+            # 3.1) Encrypt the server challenge to send it back
+            encryptedServerChallenge = server_public_key.encrypt(
+                authenticate_packetBin.getAttributeBytes("CHALLENGE") + self.getChannelID().encode('utf-8'),
+                padding.OAEP(
+                    mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                    algorithm=hashes.SHA256(),
+                    label=None
+                )
             )
-        )
 
-        # 3.2) Construct the response packet
-        clientAuthenticateResponsePacket = ClientAuthenticateReturnPacket(self.getChannelID(),
-                                                                          encryptedServerChallenge)
-        # 3.3) Send the client authenticate response packet
-        sendPacket(clientAuthenticateResponsePacket, (self.getConnection(), None))
+            # 3.2) Construct the response packet
+            clientAuthenticateResponsePacket = ClientAuthenticateReturnPacket(self.getChannelID(),
+                                                                              encryptedServerChallenge)
+            # 3.3) Send the client authenticate response packet
+            sendPacket(clientAuthenticateResponsePacket, (self.getConnection(), None))
+
+        except (cryptography.exceptions.NotYetFinalized, cryptography.exceptions.InvalidKey):
+            raise ClientException(self.getStopEvent(), ClientException.CRYPTOGRAPHY_EXCEPTION)
+
+        except (socket.timeout, socket.error, ConnectionResetError):  # If a socket exception happens
+            raise ClientException(self.getStopEvent(), ClientException.SOCKET_EXCEPTION)
+
+        except Exception:  # If any exception happens that can't be accounted for
+            raise ClientException(self.getStopEvent(), ClientException.FAILED_TO_AUTHENTICATE)
 
     def startListener(self):
         """
@@ -316,6 +335,9 @@ class ClientConnectionService(Service.ServiceThread):
         while not self.getStopEvent().is_set():  # Continue while the stop signal is not set
             try:
                 packet = self.getPacketCollector().awaitPacket()  # Await for a packet from the packet collector
+                if self.getStopEvent().is_set():
+                    return
+
                 if packet is None:
                     raise ClientException(self.getStopEvent(), ClientException.FAILED_TO_COLLECT_PACKET)
 
@@ -374,11 +396,11 @@ class ClientConnectionService(Service.ServiceThread):
                         info("CHANNEL_TEXT_MESSAGE", channel_id=self.getChannelID(),  # Output the message
                              display_name=displayName, message=message)
 
+            except (cryptography.exceptions.NotYetFinalized, cryptography.exceptions.InvalidKey):
+                raise ClientException(self.getStopEvent(), ClientException.CRYPTOGRAPHY_EXCEPTION)
+
             except (socket.timeout, socket.error, ConnectionResetError):  # If a socket exception happens
                 raise ClientException(self.getStopEvent(), ClientException.SOCKET_EXCEPTION)
-
-            except Exception:  # If any exception happens that can't be accounted for
-                raise ClientException(self.getStopEvent(), ClientException.FAILED_TO_DECODE_PACKET)
 
     def run(self):
         try:
@@ -412,7 +434,7 @@ class Client:
 
         # Validate that the server terminal starts with an accepted protocol
         if not any([paramServerTerminal.startswith(protocol) for protocol in TERMINAL_PROTOCOL]):
-            raise RuntimeError("Terminal protocol must begin with " + TERMINAL_PROTOCOL)
+            raise ClientException(None, ClientException.INVALID_TERMINAL_URL)
 
         self.__serverTerminal: str = paramServerTerminal  # Server Terminal URL
         self.__serverIP: str = paramServerIP              # Server IP (x.x.x.x / a:a:a:a:a:a:a:a / http(s)://...)
@@ -507,7 +529,7 @@ class Client:
         try:
             self.getClientConnection().stop()  # Stop the server
         except ConnectionAbortedError:  # Catch any errors thrown
-            raise RuntimeError("Failed to leave server")
+            raise ClientException(None, ClientException.FAILED_TO_LEAVE_SERVER)
 
     def sendMessage(self, paramMessage) -> None:
         """
@@ -543,7 +565,7 @@ class Client:
         self.__clientConnectService = clientConnectService  # Set the client connection
 
         if not clientConnectService.getReadyEvent().wait(timeout=20):  # Wait for socket connection to be established
-            raise RuntimeError("Failed to connect to server (timeout)")  # Throw runtime error when timeout happens
+            raise ClientException(None, ClientException.FAILED_TO_CONNECT_TIMEOUT)  # error when timeout happens
 
 
 def generatePrivateKey() -> RSAPrivateKey:
@@ -604,11 +626,11 @@ def getClientFromBin(paramTerminal: str, paramChannelID: str, paramBin: Bin,
 
     # Find the IP length from the IP type
     match ip_type:
-        case 0:  # IPv4
+        case IPType.IPv4:  # IPv4
             ip_size = 32
-        case 1:  # IPv6
+        case IPType.IPv6:  # IPv6
             ip_size = 128
-        case 2:  # Tunnel (http(s))
+        case IPType.Tunnel:  # Tunnel (http(s))
             ip_size = ip_placement
         case _:  # Should not ready here
             raise ClientException(None, ClientException.INVALID_IP_TYPE)
@@ -620,14 +642,14 @@ def getClientFromBin(paramTerminal: str, paramChannelID: str, paramBin: Bin,
 
     # Convert the IP back to a string
     match ip_type:
-        case 0:  # IPv4
+        case IPType.IPv4:  # IPv4
 
             ip = ".".join([str(n) for n in list(ip_bin.getAttribute("IP").to_bytes(4, byteorder="big", signed=False))])
-        case 1:  # Ipv4
+        case IPType.IPv6:  # Ipv4
 
             ip_bin = Bin([(c, 16) for c in 'ABCDEFGH'], population=ip_bin.getAttribute("IP"))
             ip = ":".join([hex(r) for r in ip_bin.getAttribute('A', 'B', 'C', 'D', 'E', 'F', 'G')])
-        case 2:  # Tunneling (http(s))
+        case IPType.Tunnel:  # Tunneling (http(s))
 
             ip_bin = Bin([("A", ip_size),
                           ("IP", paramBin.getAttributeSize("IP") - ip_size)], population=ip)

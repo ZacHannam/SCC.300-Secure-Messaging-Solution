@@ -3,9 +3,8 @@ import traceback
 
 from Properties import COMMAND_KEY
 from Language import info
-from channel.Client import Client
-from channel.Client import getClientFromTerminalScan
-from channel.Server import Server
+from channel.Client import Client, ClientException, getClientFromTerminalScan
+from channel.Server import Server, ServerException
 
 
 class Messenger:
@@ -45,7 +44,7 @@ class Messenger:
                 self.clients.append(client)
                 self.activeClient = client
 
-        except (RuntimeError, OSError) as error:
+        except (RuntimeError, OSError, ClientException, ServerException) as error:
             traceback.print_exc()
             info("MESSENGER_EXCEPTION", exception=error)
 
@@ -61,7 +60,7 @@ class Messenger:
 
         if selectedChannel is not None:
             try:
-                selectedChannel.stop()
+                selectedChannel.stopServer()
                 self.servers.remove(selectedChannel)
                 self.activeServer = None if len(self.servers) < 1 else self.servers[0]
             except (RuntimeError, OSError) as error:
@@ -132,9 +131,10 @@ class Messenger:
 
         if selectedChannel is not None:
             try:
-                if selectedChannel.banUser(paramUserName):
+                try:
+                    selectedChannel.banUser(paramUserName)
                     info("BANNED_USER", user_name=paramUserName)
-                else:
+                except ClientException:
                     info("FAILED_BANNED_USER", user_name=paramUserName)
             except (RuntimeError, OSError) as error:
                 info("MESSENGER_EXCEPTION", exception=error)

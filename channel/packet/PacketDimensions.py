@@ -8,16 +8,16 @@ from utils.BinarySequencer import ArbitraryValue
 C2S_AUTHENTICATE_DIMENSIONS = [("CHANNEL_HASH", 256),
                                ("PUBLIC_KEY_LENGTH", 16),
                                ("CLIENT_PUBLIC_KEY", ArbitraryValue.DYNAMIC),
-                               ("CHALLENGE", 2048)]
+                               ("CHALLENGE", ArbitraryValue.DYNAMIC)]
 
 S2C_AUTHENTICATE_DIMENSIONS = [("CHANNEL_HASH", 256),
                                ("PUBLIC_KEY_LENGTH", 16),
                                ("SERVER_PUBLIC_KEY", ArbitraryValue.DYNAMIC),
-                               ("CHALLENGE", 2048),
-                               ("SIGNED_CHALLENGE", 4096)]
+                               ("CHALLENGE", ArbitraryValue.DYNAMIC),
+                               ("SIGNED_CHALLENGE", ArbitraryValue.DYNAMIC)]
 
 C2S_AUTHENTICATE_RETURN_DIMENSIONS = [("CHANNEL_HASH", 256),
-                                      ("SIGNED_CHALLENGE", 4096)]
+                                      ("SIGNED_CHALLENGE", ArbitraryValue.DYNAMIC)]
 
 """
             Standard Packets

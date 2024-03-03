@@ -9,7 +9,7 @@ english = {
     "CHANNEL_CREATE": "Successfully created channel\n -> Terminal: %terminal\n -> Channel ID: %channel_id"
                       "\n -> Secret Key: %secret_key (Do not lose or share this!)\n -> IP: %ip"
                       "\n -> Port: %port\n -> Public: %public",
-    "CHANNEL_CLOSE": "Stopped chanel: %channel_id",
+    "CHANNEL_CLOSE": "Stopped channel: %channel_id",
 
     "CHANNEL_USER_JOIN": "(%channel_id) [+] %display_name",
     "CHANNEL_USER_LEAVE": "(%channel_id) [-] %display_name",

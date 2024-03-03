@@ -2,7 +2,6 @@ import random
 import re
 import hashlib
 from functools import lru_cache
-import traceback
 import cryptography.exceptions
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.backends import default_backend
@@ -12,11 +11,12 @@ from cryptography.hazmat.primitives.asymmetric import padding
 import requests
 import socket
 import time
-from enum import Enum, auto
 from threading import Event
 
 from Properties import CHANNEL_ID_LENGTH, CHANNEL_SECRET_KEY_LENGTH, DEFAULT_PORT_SERVER, CHANNEL_BIN_DIMENSIONS, \
-    CHANNEL_INFO_BIN_DIMENSIONS, CHANNEL_USER_DISPLAY_NAME_MAX, ALIVE_TIME, MAXIMUM_MESSAGE_SIZE
+    CHANNEL_INFO_BIN_DIMENSIONS, CHANNEL_USER_DISPLAY_NAME_MAX, ALIVE_TIME, MAXIMUM_MESSAGE_SIZE, IPType, \
+    TERMINAL_PROTOCOL, DEFAULT_BAN_REASON
+from channel.packet import Packet
 from utils.codecs.Base64 import BASE_64_ALPHABET, intToBase64
 from services.terminal.TerminalValidateService import TerminalValidateService
 import services.Service as Service
@@ -34,109 +34,981 @@ from channel.packet.server.S2C_ClientDisconnectPacket import ClientDisconnectPac
 from Language import info
 
 
-class IPType(Enum):
-    IPv4   = auto()
-    IPv6   = auto()
+class ServerException(Exception):
+    class Exception:
+        def __init__(self, paramFatal: bool, paramMessage: str):
+            """
+            Exception class for client exception
+            :param paramFatal:
+            :param paramMessage:
+            """
+            self.fatal = paramFatal
+            self.message = paramMessage
+
+        def isFatal(self) -> bool:
+            """
+            Returns if the exception is fatal
+            :return: Exception is fatal (bool)
+            """
+            return self.fatal
+
+        def getMessage(self) -> str:
+            """
+            Returns the message for the exception
+            :return: The exception message (str)
+            """
+            return self.message
+
+    """
+            Exceptions
+    """
+
+    SOCKET_EXCEPTION = Exception(True, "Socket failure")
+    INVALID_TERMINAL_URL = Exception(True, "Invalid Terminal URL")
+    FAILED_TO_COLLECT_PACKET = Exception(True, "Failed to collect packet")
+    INVALID_CHANNEL_ID_HASH = Exception(True, "Invalid channel ID hash in packet")
+    CLIENT_FAILED_CHALLENGE = Exception(True, "Server failed authenticate challenge")
+    MISSING_RETURN_PACKET = Exception(True, "Failed to authenticate, client didn't send response packet")
+    CRYPTOGRAPHY_EXCEPTION = Exception(True, "Cryptography failed")
+    FAILED_TO_AUTHENTICATE = Exception(True, "Server failed to authenticate")
+    FAILED_TO_GET_USER_DATA = Exception(True, "Failed to get user data")
+    FAILED_TO_GET_CLIENT_PUBLIC_KEY = Exception(True, "Failed to get client public key")
+    FAILED_TO_GET_CLIENT_CREDENTIALS = Exception(True, "Failed to get client credentials")
+    CLIENT_REJECTED = Exception(True, "Client was rejected from joining server")
+    FAILED_TO_GET_IP = Exception(True, "Failed to get external IP")
+    FAILED_TO_UNVALIDATE_TERMINAL = Exception(True, "Failed to unvalidate terminal")
+    FAILED_TO_VALIDATE_TERMINAL = Exception(True, "Failed to validate terminal")
+    FAILED_TO_PUBLISH_CHANNEL = Exception(True, "Failed to publish channel")
+    FAILED_TO_UNPUBLISH_CHANNEL = Exception(True, "Failed to unpublish channel")
+
+    INVALID_IP_FORMAT = Exception(False, "Failed to correctly format IP")
+    FAILED_TO_FIND_USER = Exception(False, "Failed to find user by their display name")
+
+    def __init__(self, paramStopSignal: Event | None, paramException: Exception):
+        """
+        Client Exception thrown in the client
+        :param paramStopSignal: The stop signal for the client
+        :param paramException: The exception being used
+        """
+        super().__init__()
+        self.message = paramException.getMessage()  # Set the exception message
+
+        if paramException.isFatal() and paramStopSignal is not None:  # Stop the client threads if it is fatal
+            paramStopSignal.set()
 
 
-class User:
-    def __init__(self, paramDisplayName: str,
-                 paramPublicKey: RSAPublicKey, paramServerConnectionService):
+class ServerConnectionService(Service.ServiceThread):
+    def __init__(self, paramClientAddress: tuple, paramConnection: socket.socket, paramChannelID: str,
+                 paramServerPrivateKey: RSAPrivateKey, paramServerMaxUsers: int, paramServerUserList: list,
+                 paramServerBanList: list):
+        """
+        Connect the client service
+        :param paramClientAddress: (ip, port)
+        :param paramConnection: Connection socket
+        """
+        super().__init__(Service.ServiceType.SERVER_CONNECTION)
+
+        # General Server / User information
+        self.__connection: socket.socket = paramConnection              # Socket connecting to client
+        self.__clientAddress: tuple = paramClientAddress                # Client address (ip, port)
+        self.__channelID: str = paramChannelID                          # Channel ID
+        self.__serverPrivateKey: RSAPrivateKey = paramServerPrivateKey  # Server Private Key
+        self.__lastAliveTime: int = int(time.time())                    # Last time client was alive
+
+        # Obtained client information
+        self.__displayName: str | None = None                  # Client display name
+        self.__clientPublicKey: RSAPublicKey | None = None     # Client public key
+
+        # Service flags
+        self.__stop = Event()    # Stop event
+        self.__ready = Event()   # Ready Event
+
+        # Packet collector
+        self.__packetCollector = PacketCollector(self.getConnection(), self.getServerPrivateKey(), self.getStopEvent())
+        self.__packetCollector.start()
+
+        # For server Authentication
+        self.__serverMaxUsers: int = paramServerMaxUsers                            # Max number of users on the server
+        self.__serverUserList: list[ServerConnectionService] = paramServerUserList  # List of of users on the server
+        self.__serverBanList: list[str] = paramServerBanList                        # List of banned users on the server
+
+
+    """
+            Getter Methods
+    """
+
+    def getChannelID(self) -> str:
+        """
+        returns the client / server channel id
+        :return: Channel ID for server / client (str)
+        """
+        return self.__channelID
+
+    def getChannelIDHash(self) -> int:
+        """
+        returns the sha256 version of the server channel id as an int
+        :return: sha256(channelID) (base 10)
+        """
+        hex_digest = hashlib.sha256(self.getChannelID().encode()).hexdigest()  # Convert the channel id to sha256
+        return int(hex_digest, 16)  # Returns the int conversion of the hex digest
+
+    def getMaxServerUsers(self) -> int:
+        """
+        Returns max number of server users
+        :return: Number of user slots on the server
+        """
+        return self.__serverMaxUsers
+
+    def getServerUserList(self) -> list:
+        """
+        Returns the list of users currently on the server
+        :return: List of server users
+        """
+        return self.__serverUserList
+
+    def getServerBanList(self) -> list:
+        """
+        Returns the list of users banned on the server
+        :return: List of ips banned on the server
+        """
+        return self.__serverBanList
+
+    """
+            RSA
+    """
+
+    def getServerPrivateKey(self) -> RSAPrivateKey:
+        """
+        Get the server private key
+        :return: The server private key (RSAPrivateKey)
+        """
+        return self.__serverPrivateKey
+
+    def getServerPublicKey(self) -> RSAPublicKey:
+        """
+        Get the server public key
+        :return: Server public key (RSAPublicKey)
+        """
+        return self.getServerPrivateKey().public_key()
+
+    def setClientPublicKey(self, paramClientPublicKey: RSAPublicKey) -> None:
+        """
+        Set the client public key
+        :param paramClientPublicKey: Client public key
+        :return: None
+        """
+        self.__clientPublicKey = paramClientPublicKey
+
+    def getClientPublicKey(self) -> RSAPublicKey:
+        """
+        Get the client's public key
+        :return: The client's public key
+        """
+        return self.__clientPublicKey
+
+    """
+            Event Methods
+    """
+
+    def getReadyEvent(self) -> Event:
+        """
+        Returns the ready event
+        :return:
+        """
+        return self.__ready
+
+    def getStopEvent(self) -> Event:
+        """
+        returns the flag for the server connection being stopped
+        :return: Stop flag (Event)
+        """
+        return self.__stop
+
+    def stop(self) -> None:
+        """
+        Set the stop event
+        :return: None
+        """
+        self.getStopEvent().set()
+
+
+    """
+            User
+    """
+
+    def registerUser(self) -> None:
+        assert self.getReadyEvent().is_set()
+
+        self.getServerUserList().append(self)
+
+        userJoinPacket = UserJoinPacket(self.getDisplayName())
+        self.sendToAllRecipients(userJoinPacket)
+
+    def unregisterUser(self) -> None:
+        self.getServerUserList().remove(self)
+
+        userLeavePacket = UserLeavePacket(self.getDisplayName())
+        self.sendToAllRecipients(userLeavePacket)
+
+    def setDisplayName(self, paramDisplayName: str) -> None:
+        """
+        Set the display name of the client
+        :return: None
+        """
         self.__displayName = paramDisplayName
-        self.__publicKey = paramPublicKey
-        self.__lastAliveTime = int(time.time())
-        self.__serverConnectionService = paramServerConnectionService
 
     def getDisplayName(self) -> str:
+        """
+        Get the display name of the client
+        :return: User display name (str)
+        """
         return self.__displayName
 
-    def getServerConnectionService(self):
-        return self.__serverConnectionService
-
-    def getPublicKey(self) -> RSAPublicKey:
-        return self.__publicKey
-
     def getLastAliveTime(self) -> int:
+        """
+        Last time an alive signal was received from the client
+        :return: Unix time (s)
+        """
         return self.__lastAliveTime
 
-    def renewTime(self):
+    def renewTime(self) -> None:
+        """
+        Renews the time on the last alive time
+        :return: None
+        """
         self.__lastAliveTime = int(time.time())
 
 
-class Server:
-    def __init__(self, paramTerminal: str, channel_id=None, secret_key=None, port=DEFAULT_PORT_SERVER,
-                 tunnel=None, public=False, max_users=20, banned_users=None):
-        if not (paramTerminal.startswith("http://") or paramTerminal.startswith("https://")):
-            paramTerminal = f"http://{paramTerminal}"
+    """
+            Ban & Kick
+    """
 
-        self.__terminal = paramTerminal
+    def kickUser(self, paramReason: str | None) -> None:
+        """
+        Kicks user for specified reason or none
+        :param paramReason: reason for kick
+        :return: None
+        """
+        clientDisconnectPacket = ClientDisconnectPacket(paramReason)
+        self.sendPacket(clientDisconnectPacket)
 
-        self.__channelID = channel_id if channel_id is not None else generateRandomChannelID()
-        self.__secretKeyBin = secret_key if secret_key is not None else generateRandomSecretKey()
-        self.__bannedUsers = [] if banned_users is None else banned_users
-        self.__port = port
-        self.__public = public
-        self.__maxNumberOfUsers = max_users
+    def banUser(self, paramReason: str | None):
+        self.kickUser(paramReason)
+        self.stop()
 
-        self.__stop = False
-        self.__users = {}
-        self.__ip = self.__getIP()
-        self.__tunnelURL = tunnel
-        self.__generatePublicAndPrivateKeys()
 
-        self.__serverHostService = None
-        self.__serverAliveService = None
+    """
+            Packet Methods
+    """
 
-        self.__startServer()
+    def getPacketCollector(self) -> PacketCollector:
+        """
+        Returns the packet collector
+        :return: Server / User packet collector
+        """
+        return self.__packetCollector
+
+    def sendPacket(self, paramPacket: Packet) -> None:
+        """
+        Send a packet to the client
+        :param paramPacket: The packet to send
+        :return: None
+        """
+        if self.getReadyEvent().is_set():  # Check the client is ready to receive encrypted packets and
+            # the server ready to send them
+            sendPacket(paramPacket, (self.getConnection(), self.getClientPublicKey()))
+
+    def sendToAllRecipients(self, paramPacket: Packet) -> None:
+        """
+        Send a packet to everyone on the server
+        :param paramPacket:
+        :return:
+        """
+        for connection in self.getServerUserList():  # Iterate over everyone in the server
+            connection.sendPacket(paramPacket)
+
+    def getConnection(self) -> socket.socket:
+        """
+        Get the connection socket
+        :return: Connection socket
+        """
+        return self.__connection
+
+    def getClientAddress(self) -> tuple:
+        """
+        Get the client address
+        :return: tuple(ip, port)
+        """
+        return self.__clientAddress
+
+    def sendInfoToUser(self, paramMessage: str) -> None:
+        """
+        Send an info packet to the client
+        :param paramMessage: The message to send
+        :return: None
+        """
+        infoMessagePacket = InfoMessagePacket(paramMessage)  # Construct the info message packet
+        self.sendPacket(infoMessagePacket)  # Send the packet
+
+    def authenticate(self) -> None:
+        """
+        Authenticate the server with the client
+        :return: None
+        """
+        try:
+
+            """ 1) Validate Client Authentication """
+            # 1.1) Await packet and unpack it
+            authenticatePacket = self.getPacketCollector().awaitPacket(packet_type=PacketType.C2S_AUTHENTICATE)
+            if self.getStopEvent().is_set():
+                return
+            if authenticatePacket is None:
+                raise ServerException(self.getStopEvent(), ServerException.FAILED_TO_COLLECT_PACKET)
+
+            authenticate_packetType, authenticate_packetBin = authenticatePacket  # Unpack the packet
+
+            # 1.2) Authenticate channel hash
+            if authenticate_packetBin.getAttribute("CHANNEL_HASH") != self.getChannelIDHash():
+                raise ServerException(self.getStopEvent(), ServerException.INVALID_CHANNEL_ID_HASH)
+
+            # 1.3) Load the public key
+            der_key_size = authenticate_packetBin.getAttribute("PUBLIC_KEY_LENGTH")
+            der_key = authenticate_packetBin.getAttribute("CLIENT_PUBLIC_KEY").to_bytes(der_key_size, byteorder="big")
+
+            client_public_key = serialization.load_der_public_key(
+                der_key,
+                backend=default_backend())
+
+            # 1.4) Set the client public key
+            self.setClientPublicKey(client_public_key)
+
+            # 1.5) Encrypt the client challenge to the server
+            clientEncryptedChallenge = self.getClientPublicKey().encrypt(
+                # Concat the challenge with the the channel id in encrypted
+                authenticate_packetBin.getAttributeBytes("CHALLENGE"),
+                padding.OAEP(
+                    mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                    algorithm=hashes.SHA256(),
+                    label=None
+                )
+            )
+
+            """ 2) Send The Server Authenticate Packet To The Client """
+            serverAuthenticatePacket = ServerAuthenticatePacket(self.getChannelID(),
+                                                                self.getServerPublicKey(),
+                                                                clientEncryptedChallenge)  # Construct the packet
+
+            sendPacket(serverAuthenticatePacket, (self.getConnection(), None))  # Send the packet to client
+
+            """ 3) Receive The Return Packet From The Client """
+            # 3.1) Collect return packet
+            authenticate_returnPacket = self.getPacketCollector()\
+                .awaitPacket(packet_type=PacketType.C2S_AUTHENTICATE_RETURN)
+
+            if self.getStopEvent().is_set():
+                return
+
+            # 3.2) Check if packet is valid
+            if authenticate_returnPacket is None:
+                raise ServerException(self.getStopEvent(), ServerException.MISSING_RETURN_PACKET)
+
+            authenticate_return_packetType, authenticate_return_packetBin = authenticate_returnPacket  # Unpack packet
+
+            # 3.3) Check the response hash
+            if authenticate_return_packetBin.getAttribute("CHANNEL_HASH") != self.getChannelIDHash():
+                raise ServerException(self.getStopEvent(), ServerException.INVALID_CHANNEL_ID_HASH)
+
+            # 3.4) Check the decrypted challenge response
+            decryptedClientChallenge = self.getServerPrivateKey().decrypt(
+                authenticate_return_packetBin.getAttributeBytes("SIGNED_CHALLENGE"),
+                padding.OAEP(
+                    mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                    algorithm=hashes.SHA256(),
+                    label=None
+                )
+            )
+
+            # 3.5) Check if client has successfully completed the challenge
+            if decryptedClientChallenge != serverAuthenticatePacket.getChallenge() +\
+                    self.getChannelID().encode('utf-8'):
+                raise ServerException(self.getStopEvent(), ServerException.CLIENT_FAILED_CHALLENGE)
+
+        except (cryptography.exceptions.NotYetFinalized, cryptography.exceptions.InvalidKey):
+            raise ServerException(self.getStopEvent(), ServerException.CRYPTOGRAPHY_EXCEPTION)
+
+        except (socket.timeout, socket.error, ConnectionResetError):  # If a socket exception happens
+            raise ServerException(self.getStopEvent(), ServerException.SOCKET_EXCEPTION)
+
+    def getUserData(self) -> None:
+        """
+        Gets and sets the user data
+        :return: None
+        """
+        try:
+            # 1) Send user data request
+            serverRequestUserData = RequestUserData()  # Construct request user data packet
+            sendPacket(serverRequestUserData, (self.getConnection(), self.getClientPublicKey()))  # Send packet
+
+            # 2) Receive user data from client
+            user_dataPacket = self.getPacketCollector().awaitPacket(packet_type=PacketType.C2S_USER_DATA)
+            if self.getStopEvent().is_set():
+                return
+
+            if user_dataPacket is None:
+                raise ServerException(self.getStopEvent(), ServerException.FAILED_TO_GET_USER_DATA)
+
+            userData_packetType, userData_packetBin = user_dataPacket  # Unpack packet
+
+            displayNameLength = userData_packetBin.getAttribute("DISPLAY_NAME_LENGTH")  # Display name length
+            displayName = intToBase64(userData_packetBin.getAttribute("DISPLAY_NAME"))  # Display name
+
+            # 3) Set the user display name
+            self.setDisplayName(displayName[:min(displayNameLength, CHANNEL_USER_DISPLAY_NAME_MAX)])
+
+        except (socket.timeout, socket.error, ConnectionResetError):  # If a socket exception happens
+            raise ServerException(self.getStopEvent(), ServerException.SOCKET_EXCEPTION)
+
+    def getClientServerErrors(self) -> list[str]:
+        """
+        Returns the list of reasons why client can't join the server
+        :return: List of reasons why client can't join
+        """
+        userErrors = []  # Contains a list of all reasons why user can't join server
+
+        if (len(self.getServerUserList()) + 1) > self.getMaxServerUsers():  # Check if server is full
+            userErrors.append("Server is full!")
+
+        if self.getConnection().getsockname()[0] in self.getServerBanList():  # Check if client is banned
+            userErrors.append("You are banned from this channel!")
+
+        for user in self.getServerUserList():
+            if user.getDisplayName == self.getDisplayName():
+                userErrors.append("Someone with that display name is already online!")
+                break
+
+        return userErrors  # Return all the errors
+
+    def startListener(self):
+        while not self.__stop.is_set():
+            try:
+                packet =  self.getPacketCollector().awaitPacket()  # Await a packet from client
+                if self.getStopEvent().is_set():
+                    return
+
+                if packet is None:  # If packet is none then it will fail to collect packet
+                    raise ServerException(self.getStopEvent(), ServerException.FAILED_TO_COLLECT_PACKET)
+
+                packetType, packetBin = packet  # Unpack packet
+
+                match packetType:
+                    case PacketType.C2S_ALIVE_RESPONSE:
+                        self.renewTime()
+
+                    case PacketType.C2S_USER_LEAVE:
+                        return  # Return as the user has left
+
+                    case PacketType.C2S_TEXT_MESSAGE:
+                        encodedMessage = packetBin.getAttributeBytes("MESSAGE")
+                        if encodedMessage is None:
+                            continue
+
+                        message = encodedMessage.decode('utf-8')
+                        if len(message) > MAXIMUM_MESSAGE_SIZE:
+                            self.sendInfoToUser(f"Message exceeds maximum size of: {MAXIMUM_MESSAGE_SIZE}")
+                            continue
+
+                        textMessagePacket = TextMessagePacket(self.getDisplayName(), message)
+                        self.sendToAllRecipients(textMessagePacket)
+
+            except (cryptography.exceptions.NotYetFinalized, cryptography.exceptions.InvalidKey):
+                raise ServerException(self.getStopEvent(), ServerException.CRYPTOGRAPHY_EXCEPTION)
+
+            except (socket.timeout, socket.error, ConnectionResetError):  # If a socket exception happens
+                raise ServerException(self.getStopEvent(), ServerException.SOCKET_EXCEPTION)
+
+    def run(self):
+        try:
+
+            # 1) Authenticate and get public key
+            self.authenticate()
+            if self.getClientPublicKey() is None:
+                raise ServerException(self.getStopEvent(), ServerException.FAILED_TO_GET_CLIENT_PUBLIC_KEY)
+
+            # 3) Get user info (just display name but expandable for later)
+            self.getUserData()
+            if self.getDisplayName() is None:
+                raise ServerException(self.getStopEvent(), ServerException.FAILED_TO_GET_CLIENT_CREDENTIALS)
+
+            # 4) Check if user passes checks i.e bans, and number of people online
+            clientServer_errors = self.getClientServerErrors()
+
+            if len(clientServer_errors) > 0:
+                clientDisconnectPacket = ClientDisconnectPacket(", ".join(clientServer_errors))
+                self.sendPacket(clientDisconnectPacket)
+                raise ServerException(self.getStopEvent(), ServerException.CLIENT_REJECTED)
+
+            # 5) Register user
+            self.getReadyEvent().set()
+            self.registerUser()
+
+            self.startListener()
+
+        finally:
+            # 4) Close socket
+            self.unregisterUser()
+            self.getConnection().close()
+
+
+class ServerAliveService(Service.ServiceThread):
+    def __init__(self, paramServerUserList: list[ServerConnectionService], paramStopEvent: Event):
+        """
+        Server Alive Service to check nobody has timed out or disconnected missing a packet
+        :param paramServerUserList:
+        """
+        super().__init__(Service.ServiceType.SERVER_ALIVE)
+
+        self.__stop = paramStopEvent
+        self.__serverUserList = paramServerUserList
+
+    def getServerUserList(self) -> list[ServerConnectionService]:
+        """
+        Returns the server user list
+        :return:
+        """
+        return self.__serverUserList
+
+    def getStopEvent(self) -> Event:
+        """
+        Get the stop event
+        :return: The stop event
+        """
+        return self.__stop
+
+    def stop(self) -> None:
+        """
+        Stop the service
+        :return: None
+        """
+        self.getStopEvent().set()
+
+    def run(self):
+        alivePacket = AlivePacket()  # Create an alive packet
+
+        while not self.getStopEvent().is_set():  # Run until the stop flag is set
+            start_currentTime = int(time.time())  # Get the current time
+
+            for user in self.getServerUserList():  # Get each user connected
+                if user.getLastAliveTime() + ALIVE_TIME < start_currentTime:
+                    user.kickUser("Timed out.")  # Time out if the last alive time was too long away
+                user.sendPacket(alivePacket)
+
+            difference_currentTime: int = int(time.time()) - start_currentTime  # Get the difference in times
+            self.getStopEvent().wait(ALIVE_TIME - difference_currentTime)  # Wait for the next cycle
+
+
+class ServerHostService(Service.ServiceThread):
+    def __init__(self, paramServerPort: int, paramStopEvent: Event,
+                 paramChannelID: str, paramServerPrivateKey: RSAPrivateKey, paramServerMaxUsers: int,
+                 paramServerUserList: list, paramServerBanList: list):
+        super().__init__(Service.ServiceType.SERVER_HOST)
+
+        self.__serverPort = paramServerPort  # Port the server is running on
+        self.__stop = paramStopEvent  # Server stop event
+
+        self.__channelID: str = paramChannelID  # Channel ID
+        self.__serverPrivateKey: RSAPrivateKey = paramServerPrivateKey  # Server Private Key
+
+        # For server Authentication
+        self.__serverMaxUsers: int = paramServerMaxUsers  # Max number of users on the server
+        self.__serverUserList: list[ServerConnectionService] = paramServerUserList  # List of of users on the server
+        self.__serverBanList: list[str] = paramServerBanList  # List of banned users on the server
+
+        self.__ready = Event()
+
+    def getServerPort(self) -> int:
+        """
+        Returns the server port
+        :return: The server port
+        """
+        return self.__serverPort
+
+    def getStopEvent(self) -> Event:
+        """
+        Get the stop event
+        :return: The stop event
+        """
+        return self.__stop
+
+    def getReadyEvent(self) -> Event:
+        """
+        Ready Event for the host service
+        :return: The ready event
+        """
+        return self.__ready
+
+    def getMaxServerUsers(self) -> int:
+        """
+        Returns max number of server users
+        :return: Number of user slots on the server
+        """
+        return self.__serverMaxUsers
+
+    def getServerUserList(self) -> list:
+        """
+        Returns the list of users currently on the server
+        :return: List of server users
+        """
+        return self.__serverUserList
+
+    def getServerBanList(self) -> list:
+        """
+        Returns the list of users banned on the server
+        :return: List of ips banned on the server
+        """
+        return self.__serverBanList
+
+    def getServerPrivateKey(self) -> RSAPrivateKey:
+        """
+        Returns the server private key
+        :return: Server private key (RSAPrivateKey)
+        """
+        return self.__serverPrivateKey
+
+    def getChannelID(self) -> str:
+        """
+        Gets the server channel id
+        :return:
+        """
+        return self.__channelID
+
+    def run(self):
+        host = socket.gethostname()
+        port = self.getServerPort()
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
+            server_socket.bind((host, port))
+            self.getReadyEvent().set()
+
+            server_socket.listen()
+            server_socket.settimeout(1.0)
+
+            while not self.getStopEvent().is_set():
+                try:
+                    # Accept new connection
+                    connection, client_address = server_socket.accept()
+
+                    # Create a new server connection
+                    serverConnectionService = ServerConnectionService(client_address, connection,
+                                                                      self.getChannelID(),
+                                                                      self.getServerPrivateKey(),
+                                                                      self.getMaxServerUsers(),
+                                                                      self.getServerUserList(),
+                                                                      self.getServerBanList())
+
+                    serverConnectionService.start()
+                except socket.timeout:
+                    pass  # Refresh the stop event flag
+
+            server_socket.close()
+
+
+class PublishChannelService(Service.ServiceThread):
+    def __init__(self, paramStopEvent: Event, paramTerminal: str, paramChannelID: str,
+                 paramSecretKey: str, paramIsPublic: bool, paramChannelBin: Bin):
+        """
+        Method to publish channel to the terminal
+        :param paramStopEvent: Server stop event
+        :param paramTerminal: Server terminal url
+        :param paramChannelID: Server channel ID
+        :param paramSecretKey: Server secret key
+        :param paramIsPublic: Server public setting
+        :param paramChannelBin: Server channel bin
+        """
+        super().__init__(Service.ServiceType.SERVER_PUBLISH)
+
+        self.__channelBin: Bin = paramChannelBin
+        self.__stopEvent: Event = paramStopEvent
+        self.__terminal: str = paramTerminal
+        self.__channelID: str = paramChannelID
+        self.__secretKey: str = paramSecretKey
+        self.__isPublic: bool = paramIsPublic
+        self.__result: dict | None = None
 
     """
             Getter Methods
     """
 
     def getTerminal(self) -> str:
+        """
+        Returns the terminal url
+        :return: Terminal URL server is using (str)
+        """
+        return self.__terminal
+
+    def getChannelBin(self) -> Bin:
+        """
+        Returns the channel bin
+        :return: Channel Bin
+        """
+        return self.__channelBin
+
+    def getSecretKey(self) -> str:
+        """
+        Returns the channel secret key
+        :return: Server secret key
+        """
+        return self.__secretKey
+
+    def isPublic(self) -> bool:
+        """
+        Returns if the server is public
+        :return: If the server is public
+        """
+        return self.__isPublic
+
+    def getChannelID(self) -> str:
+        """
+        Returns the channel ID
+        :return: Channel ID
+        """
+        return self.__channelID
+
+    def getStopEvent(self) -> Event:
+        """
+        Returns the stop event
+        :return: Stop event
+        """
+        return self.__stopEvent
+
+    def getResult(self) -> dict:
+        """
+        Returns the result of the channel bin
+        :return: Result of validating
+        """
+        return self.__result
+
+    """
+            Methods
+    """
+
+    def publish(self) -> None:
+        """
+        Attempts to publish the channel to the terminal and saves value in result
+        :return: None
+        """
+
+        # Convert channel bin to base 85
+        base85channelBin = intToBase85(self.getChannelBin().getResult(),
+                                       nBytes=getBinSize(CHANNEL_BIN_DIMENSIONS) // 8)
+
+        try:
+            json = {
+                "CHANNEL": base85channelBin,
+                "CHANNEL_SECRET": self.getSecretKey()
+            }
+
+            if self.isPublic():
+                json["CHANNEL_ID"] = self.getChannelID()
+
+            response = requests.post(f"{self.getTerminal()}/validate", json=json)  # Send validation post request
+
+            self.__result = response.json()
+
+        except (requests.RequestException, requests.exceptions.ContentDecodingError):
+            raise ServerException(self.getStopEvent(), ServerException.FAILED_TO_PUBLISH_CHANNEL)
+
+    def run(self):
+        self.publish()
+
+
+class UnPublishChannelService(Service.ServiceThread):
+    def __init__(self, paramTerminal: str, paramSecretKey: str, paramStopEvent: Event):
+        """
+        Method to unpublish channel
+        :param paramTerminal: Server terminal
+        :param paramSecretKey: Server secret key
+        :param paramStopEvent: Server stop event
+        """
+        super().__init__(Service.ServiceType.SERVER_UNPUBLISH)
+
+        self.__terminal: str = paramTerminal
+        self.__secretKey: str = paramSecretKey
+        self.__stopEvent: Event = paramStopEvent
+        self.__result: dict | None = None
+
+    """
+            Getter Methods
+    """
+
+    def getTerminal(self) -> str:
+        """
+        Returns the terminal url
+        :return: Terminal URL server is using (str)
+        """
+        return self.__terminal
+
+    def getSecretKey(self) -> str:
+        """
+        Returns the channel secret key
+        :return: Server secret key
+        """
+        return self.__secretKey
+
+    def getStopEvent(self) -> Event:
+        """
+        Returns the stop event
+        :return: Stop event
+        """
+        return self.__stopEvent
+
+    def getResult(self) -> dict:
+        """
+        Returns the result of the channel bin
+        :return: Result of validating
+        """
+        return self.__result
+
+    """
+            Methods
+    """
+
+    def unpublish(self) -> None:
+        """
+        Attempts to unpublish channel in terminal and saves result
+        :return:
+        """
+
+        try:
+            json = {
+                "CHANNEL_SECRET": self.getSecretKey()
+            }
+
+            response = requests.post(f"{self.getTerminal()}/unvalidate", json=json)
+
+            self.__result = response.json()
+
+        except (requests.RequestException, requests.exceptions.ContentDecodingError):
+            raise ServerException(self.getStopEvent(), ServerException.FAILED_TO_UNPUBLISH_CHANNEL)
+
+    def run(self):
+        self.unpublish()
+
+
+
+class Server:
+    def __init__(self, paramServerTerminal: str, channel_id=None, secret_key=None, port=DEFAULT_PORT_SERVER,
+                 tunnel_url=None, public=False, max_users=20, banned_users=None):
+
+        # Validate that the server terminal starts with an accepted protocol
+        if not any([paramServerTerminal.startswith(protocol) for protocol in TERMINAL_PROTOCOL]):
+            raise ServerException(None, ServerException.INVALID_TERMINAL_URL)
+
+        # Server address
+        self.__terminal: str = paramServerTerminal
+        self.__port: int = port
+        self.__tunnelURL: dict | None = tunnel_url
+
+        # Server Channel
+        self.__channelID: str = channel_id if channel_id is not None else generateRandomChannelID()
+        self.__secretKey: str = secret_key if secret_key is not None else generateRandomSecretKey()
+        self.__public: bool = public
+
+        # RSA
+        self.__privateKey: RSAPrivateKey | None = None
+        self.generatePublicAndPrivateKeys()
+
+        # User Management
+        self.__userList: list[ServerConnectionService] = []
+        self.__bannedUsers: list[str] = [] if banned_users is None else banned_users
+        self.__maxNumberOfUsers: int = max_users
+
+
+        # Events
+        self.__stop: Event = Event()
+        self.__ready: Event = Event()
+
+        # Services
+        self.__serverHostService: ServerHostService | None = None
+        self.__serverAliveService: ServerAliveService | None = None
+
+        self.startServer()
+
+    """
+            Getter Methods
+    """
+
+    def getTerminal(self) -> str:
+        """
+        Returns the terminal being used
+        :return: Terminal URL (str)
+        """
         return self.__terminal
 
     def getChannelID(self) -> str:
+        """
+        Returns the channel ID of the server
+        :return: Channel ID (str)
+        """
         return self.__channelID
 
     def getSecretKey(self) -> str:
-        return self.__secretKeyBin
+        """
+        Returns the secret key of the server
+        :return: Secret key of server (str)
+        """
+        return self.__secretKey
 
     def getPort(self) -> int:
+        """
+        Returns the server port
+        :return: Server port (int)
+        """
         return self.__port
 
     def isPublic(self) -> bool:
+        """
+        Returns if the server is shown as public on the terminal
+        :return: Server shown (bool)
+        """
         return self.__public
 
-    def getChannelIDHash(self) -> int:
-        hex_digest = hashlib.sha256(self.getChannelID().encode()).hexdigest()
-        return int(hex_digest, 16)
+    """
+                Events
+    """
 
-    def getServerHostService(self):
-        return self.__serverHostService
+    def getReadyEvent(self) -> Event:
+        """
+        Returns the ready event
+        :return: Stop flag (Event)
+        """
+        return self.__ready
 
-    def getServerAliveService(self):
-        return self.__serverAliveService
-
-    def getMaxNumberOfUsers(self) -> int:
-        return self.__maxNumberOfUsers
-
-    def setMaxNumberOfUsers(self, paramNumberOfUsers):
-        self.__maxNumberOfUsers = paramNumberOfUsers
+    def getStopEvent(self) -> Event:
+        """
+        returns the flag for the server being stopped
+        :return: Stop flag (Event)
+        """
+        return self.__stop
 
     """
                 IP
     """
 
     @lru_cache(maxsize=1)
-    def __getIP(self) -> dict | None:  # {type, ip, ip_bin}
+    def getIP(self) -> dict:
+        """
+        Returns the ip in all different forms
+        :return:
+        """
 
-        response = requests.get("https://httpbin.org/ip")
+        response = requests.get("https://httpbin.org/ip")  # Makes a request to find the external ip
 
         if response.status_code != 200:  # Check that the request is OK
-            return None
+            raise ServerException(self.getStopEvent(), ServerException.FAILED_TO_GET_IP)
 
-        ip = response.json()['origin']
+        ip = response.json()['origin']  # Read the IP from the website
+
+        # Bundles up the ip
 
         # Check if IP is 0: v4 or 1: v6 and return it in binary
         if "." in ip:
@@ -153,42 +1025,154 @@ class Server:
                     "ip_binary": int(''.join([bin(int(split, 16))[2:].zfill(16) for split in ip.split(":")]), 2)
                     }
 
-    def getIP(self) -> dict:
-        return self.__ip
-
     """
             Tunneling
     """
 
     def isTunneling(self) -> bool:
+        """
+        Returns if the server is tunneling
+        :return: Server is tunneling (bool)
+        """
         return self.__tunnelURL is not None
 
     def getTunnelURL(self) -> dict:
+        """
+        Returns the tunnel url
+        :return: tunnel url {http(s)://..., port}
+        """
         return self.__tunnelURL
 
     def setTunnelURL(self, paramTunnelURL: dict):
+        """
+        Sets the tunnel url
+        :param paramTunnelURL: tunnel url {http(s)://..., port}
+        :return:
+        """
         self.__tunnelURL = paramTunnelURL
+
+    """
+            Services
+    """
+
+    def getServerHostService(self) -> ServerHostService:
+        """
+        Returns the host service
+        :return: Host service
+        """
+        return self.__serverHostService
+
+    def getServerAliveService(self) -> ServerAliveService:
+        """
+        Returns the alive service
+        :return:
+        """
+        return self.__serverAliveService
+
+    """
+            Server Connection Service
+    """
+
+    def getUserByDisplayName(self, paramDisplayName: str) -> ServerConnectionService:
+        """
+        Gets the Server Connection Service by their display name
+        :param paramDisplayName: Display name searched for
+        :return: client connections
+        """
+        for serverConnectionService in self.getUserList():
+            if serverConnectionService.getDisplayName() == paramDisplayName:
+                return serverConnectionService
+
+        raise ServerException(self.getStopEvent(), ServerException.FAILED_TO_FIND_USER)
+
+    def getMaxNumberOfUsers(self) -> int:
+        """
+        Returns the max number of users on the server
+        :return: Max number of users on the server
+        """
+        return self.__maxNumberOfUsers
+
+    def setMaxNumberOfUsers(self, paramNumberOfUsers) -> None:
+        """
+        Set the max number of users on the server
+        :param paramNumberOfUsers: Max number of clients
+        :return: None
+        """
+        self.__maxNumberOfUsers = paramNumberOfUsers
+
+    def getUserList(self) -> list[ServerConnectionService]:
+        """
+        Returns the list of users on the server
+        :return: List of server users
+        """
+        return self.__userList
+
+
+    def getNumberOfUsers(self) -> int:
+        """
+        Gets the number of users
+        :return: Number of users
+        """
+        return len(self.getUserList())
+
+    def getBannedUsers(self) -> list[str]:
+        """
+        Returns a list of banned IPs
+        :return:
+        """
+        return self.__bannedUsers
+
+    def banUser(self, paramDisplayName: str, paramReason=DEFAULT_BAN_REASON):
+        """
+        Bans a user
+        :param paramReason: Reason for ban
+        :param paramDisplayName: Display name of user to ban
+        """
+        client = self.getUserByDisplayName(paramDisplayName)
+        client.banUser(paramReason)
+
+    def kickUser(self, paramDisplayName: str, paramReason: str):
+        """
+        Kicks a user from the server
+        :param paramDisplayName: Display name of user to kick
+        :param paramReason: Reason for kick
+        :return:
+        """
+        client = self.getUserByDisplayName(paramDisplayName)
+        client.kickUser(paramReason)
+
+    def kickAllUsers(self, disconnect_reason=None):
+        """
+        Kicks all users from the server
+        :param disconnect_reason:
+        :return:
+        """
+        for key in self.getUserList()[:]:  # Duplicate user list to avoid problems
+            key.kickUser(disconnect_reason)
 
     """
                 RSA
     """
 
-    def getPrivateKey(self) -> RSAPrivateKey:
+    def getServerPrivateKey(self) -> RSAPrivateKey:
+        """
+        Returns the Server Private Key
+        :return: Server Private Key (RSAPrivateKey)
+        """
         return self.__privateKey
 
-    def getPublicKey(self) -> RSAPublicKey:
-        return self.getPrivateKey().public_key()
+    def getServerPublicKey(self) -> RSAPublicKey:
+        """
+        Returns the Server Public Key
+        :return: Server Public Key
+        """
+        return self.getServerPrivateKey().public_key()
 
-    @lru_cache(maxsize=1)
-    def getPublicKeyBytes(self) -> bytes:
-        public_key_der = self.getPublicKey().public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo
-        )
-
-        return public_key_der
-
-    def __generatePublicAndPrivateKeys(self):
+    def generatePublicAndPrivateKeys(self) -> None:
+        """
+        Generates the public and private keys
+        :return: None
+        """
         # Generate a private key
         private_key = rsa.generate_private_key(
             public_exponent=65537,
@@ -198,509 +1182,73 @@ class Server:
         self.__privateKey = private_key
 
     """
-                SERVER USERS
-    """
-
-    def getBannedUsers(self) -> list[str]:
-        return self.__bannedUsers
-
-    def banUser(self, paramDisplayName):
-        for user in self.getUsers():
-            if user.getDisplayName == paramDisplayName:
-                self.__banUser(user.getServerConnectionService().getConnection())
-                return True
-        return False
-
-
-    def __banUser(self, paramConnection):
-        self.__bannedUsers.append(paramConnection.getsockname[0])
-        self.unregisterUser(paramConnection)
-
-    def getUser(self, paramConnection) -> User:
-        return self.__users.get(paramConnection, None)
-
-    def getUsers(self) -> dict:
-        return self.__users
-
-    def getNumberOfUsers(self) -> int:
-        return len(self.getUsers())
-
-    def getAllRecipients(self) -> list:
-        return [(user.getServerConnectionService().getConnection(), user.getPublicKey())
-                for user in self.__users.values()]
-
-    def registerUser(self, paramDisplayName, paramPublicKey, paramServerConnectionService) -> User:
-        user = User(paramDisplayName, paramPublicKey, paramServerConnectionService)
-        self.__users[paramServerConnectionService.getConnection()] = user
-
-        userJoinPacket = UserJoinPacket(paramDisplayName)
-        sendPacket(userJoinPacket, self.getAllRecipients())
-
-        return user
-
-    def isUser(self, paramConnection) -> bool:
-        return paramConnection in self.__users
-
-    def unregisterUser(self, paramConnection: tuple, disconnect_reason=None):
-        if paramConnection in self.__users.keys():
-
-            user = self.__users.get(paramConnection)
-            serverConnectionService = user.getServerConnectionService()
-
-            userLeavePacket = UserLeavePacket(user.getDisplayName())
-            sendPacket(userLeavePacket, self.getAllRecipients())
-
-            clientDisconnectPacket = ClientDisconnectPacket(disconnect_reason)
-            serverConnectionService.sendPacket(clientDisconnectPacket)
-            serverConnectionService.stop()
-
-            del self.__users[paramConnection]
-
-    def unregisterAllUsers(self, disconnect_reason=None):
-        for key in list(self.__users.keys())[:]:
-            self.unregisterUser(key, disconnect_reason)
-
-    """
                 SERVER
     """
 
-    def stop(self):
-        unpublishService = UnPublishChannelService(self)
+    def stopServer(self):
+        # Start unvalidate service in terminal
+        unpublishService = UnPublishChannelService(self.getTerminal(), self.getSecretKey(), self.getStopEvent())
         unpublishService.start()
 
-        self.unregisterAllUsers(disconnect_reason="Server stopping.")
-        self.getServerAliveService().stop()
-        self.getServerHostService().stop()
+        # Kick all users
+        self.kickAllUsers("Server stopping.")
+        self.getStopEvent().set()
 
+        self.getServerAliveService().join()
+        self.getServerHostService().join()
 
+        # Wait for the host service to finish
+        info("CHANNEL_CLOSE", terminal=self.getTerminal(), channel_id=self.getChannelID(),
+             secret_key=self.getSecretKey(), ip=self.getIP().get("ip"),
+             port=str(self.getPort()), public=str(self.isPublic()))
+
+        # Wait for all to finish
         unpublishService.join()
-        if not unpublishService.getResult()['SUCCESS']:
-            raise RuntimeError("Failed to unvalidate server")
+        if not unpublishService.getResult()['SUCCESS']:  # Check if successfully unpublished channel
+            raise ServerException(self.getStopEvent(), ServerException.FAILED_TO_UNPUBLISH_CHANNEL)
 
 
-    def __startServer(self):
+    def startServer(self):
         # 1) Check if terminal is available
         terminalValidateService = TerminalValidateService(self.getTerminal())
         terminalValidateService.start()
         terminalValidateService.join()
 
         if not terminalValidateService.getResult():
-            raise RuntimeError(f"Failed to validate terminal {self.getTerminal()}")
+            raise ServerException(self.getStopEvent(), ServerException.FAILED_TO_VALIDATE_TERMINAL)
 
         # 2) Start receiver thread
 
-        serverHostService = ServerHostService(self)
-        serverHostService.start()
+        serverHostService = ServerHostService(self.getPort(), self.getStopEvent(), self.getChannelID(),
+                                              self.getServerPrivateKey(), self.getMaxNumberOfUsers(),
+                                              self.getUserList(), self.getBannedUsers())
+
+        serverHostService.start()  # Start the host service
         self.__serverHostService = serverHostService
 
-        while not serverHostService.isReady():
+        while not serverHostService.getReadyEvent().is_set():  # Wait for host service to be ready
             continue
+
+        # 2.1) Send message after service is ready
+        info("CHANNEL_CREATE", terminal=self.getTerminal(), channel_id=self.getChannelID(),
+             secret_key=self.getSecretKey(), ip=self.getIP().get("ip"),
+             port=str(self.getPort()), public=str(self.isPublic()))
 
         # 3) Start alive service
 
-        serverAliveService = ServerAliveService(self)
+        serverAliveService = ServerAliveService(self.getUserList(), self.getStopEvent())
         serverAliveService.start()
         self.__serverAliveService = serverAliveService
 
         # 4) Publish channel public service
 
-        publishChannelService = PublishChannelService(self)
+        publishChannelService = PublishChannelService(self.getStopEvent(), self.getTerminal(), self.getChannelID(),
+                                                      self.getSecretKey(), self.isPublic(), createChannelBin(self))
         publishChannelService.start()
         publishChannelService.join()
 
         if not publishChannelService.getResult()['SUCCESS']:
-            raise RuntimeError(f"Failed to publish channel\n{publishChannelService.getResult()['EXCEPTION']}")
-
-
-class ServerAliveService(Service.ServiceThread):
-    def __init__(self, paramServer: Server):
-        super().__init__(Service.ServiceType.SERVER_ALIVE)
-
-        self.__server = paramServer
-        self.__stop = Event()
-
-    def stop(self):
-        self.__stop.set()
-
-    def getServer(self) -> Server:
-        return self.__server
-
-    def run(self):
-        while not self.__stop.is_set():
-
-            currentTime = int(time.time())
-            for user in list(self.getServer().getUsers().values())[:]:      # Stop concurrent modification
-                if user.getLastAliveTime() + ALIVE_TIME < currentTime:
-                    self.getServer().unregisterUser(user.getServerConnectionService().getConnection(),
-                                                    "Timed out.")
-
-            sendPacket(AlivePacket(), self.getServer().getAllRecipients())
-
-            self.__stop.wait(ALIVE_TIME)
-
-
-class ServerHostService(Service.ServiceThread):
-    def __init__(self, paramServer: Server):
-        super().__init__(Service.ServiceType.SERVER_HOST)
-
-        self.__server = paramServer
-        self.__ready = False
-        self.__stop = Event()
-
-    def stop(self):
-        self.__stop.set()
-
-    def getServer(self) -> Server:
-        return self.__server
-
-    def isReady(self) -> bool:
-        return self.__ready
-
-    def run(self):
-        host = socket.gethostname()
-        port = self.getServer().getPort()
-
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
-            server_socket.bind((host, port))
-            self.__ready = True
-
-            info("CHANNEL_CREATE", terminal=self.getServer().getTerminal(), channel_id=self.getServer().getChannelID(),
-                 secret_key=self.getServer().getSecretKey(), ip=self.getServer().getIP().get("ip"),
-                 port=str(self.getServer().getPort()), public=str(self.getServer().isPublic()))
-
-            server_socket.listen()
-            server_socket.settimeout(1.0)
-
-            while not self.__stop.is_set():
-                try:
-                    # Accept new connection
-                    connection, client_address = server_socket.accept()
-
-                    serverAuthenticateService = ServerConnectionService(self.getServer(), client_address, connection)
-                    serverAuthenticateService.start()
-                except socket.timeout:
-                    pass  # Refresh the stop event flag
-
-            server_socket.close()
-
-            info("CHANNEL_CLOSE", terminal=self.getServer().getTerminal(), channel_id=self.getServer().getChannelID(),
-                 secret_key=self.getServer().getSecretKey(), ip=self.getServer().getIP().get("ip"),
-                 port=str(self.getServer().getPort()), public=str(self.getServer().isPublic()))
-
-
-class ServerConnectionService(Service.ServiceThread):
-    def __init__(self, paramServer: Server, paramClientAddress: tuple, paramConnection):
-        super().__init__(Service.ServiceType.SERVER_CONNECTION)
-
-        self.__server = paramServer
-        self.__connection = paramConnection
-        self.__clientAddress = paramClientAddress
-
-        self.__packetCollector = None
-        self.__user = None
-        self.__stop = Event()
-
-    def getServer(self) -> Server:
-        return self.__server
-
-    """
-            Packet Methods
-    """
-
-    def getPacketCollector(self) -> PacketCollector:
-        return self.__packetCollector
-
-    def __setPacketCollector(self, paramPacketCollector: PacketCollector):
-        self.__packetCollector = paramPacketCollector
-
-    """
-            User
-    """
-
-    def getUser(self) -> User:
-        return self.__user
-
-    def __setUser(self, paramUser: User):
-        self.__user = paramUser
-
-    """
-            Connection Methods
-    """
-
-    def sendPacket(self, paramPacket):
-        sendPacket(paramPacket, (self.getConnection(), self.getUser().getPublicKey()))
-
-    def getConnection(self):
-        return self.__connection
-
-    def stop(self):
-        self.__stop.set()
-
-    def getClientAddress(self) -> tuple:
-        return self.__clientAddress
-
-    def sendInfoToUser(self, paramMessage: str):
-        infoMessagePacket = InfoMessagePacket(paramMessage)
-        self.sendPacket(infoMessagePacket)
-
-    def __authenticate(self) -> RSAPublicKey | None:
-        try:
-
-            # Validate authentication
-            authenticatePacket = self.getPacketCollector().awaitPacket(packet_type=PacketType.C2S_AUTHENTICATE)
-            if authenticatePacket is None:
-                return None
-            authenticate_packetType, authenticate_packetBin = authenticatePacket
-
-            if authenticate_packetBin.getAttribute("CHANNEL_HASH") != self.getServer().getChannelIDHash():
-                raise ValueError("Channel Hash invalid")
-
-            der_key_size = authenticate_packetBin.getAttribute("PUBLIC_KEY_LENGTH")
-            der_key = authenticate_packetBin.getAttribute("CLIENT_PUBLIC_KEY").to_bytes(der_key_size, byteorder="big")
-
-            client_public_key = serialization.load_der_public_key(
-                der_key,
-                backend=default_backend())
-
-            clientEncryptedChallenge = client_public_key.encrypt(
-                authenticate_packetBin.getAttributeBytes("CHALLENGE"),
-                padding.OAEP(
-                    mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                    algorithm=hashes.SHA256(),
-                    label=None
-                )
-            )
-
-            # Send back challenge
-            serverAuthenticatePacket = ServerAuthenticatePacket(self.getServer().getChannelID(),
-                                                                self.getServer().getPublicKey(),
-                                                                clientEncryptedChallenge)
-
-            sendPacket(serverAuthenticatePacket, (self.getConnection(), None))
-
-            # Get registration packet
-            authenticate_returnPacket = self.getPacketCollector()\
-                .awaitPacket(packet_type=PacketType.C2S_AUTHENTICATE_RETURN)
-            if authenticate_returnPacket is None:
-                return None
-            authenticate_return_packetType, authenticate_return_packetBin = authenticate_returnPacket
-
-            if authenticate_return_packetBin.getAttribute("CHANNEL_HASH") != self.getServer().getChannelIDHash():
-                raise ValueError("Channel Hash invalid")
-
-            decryptedClientChallenge = self.getServer().getPrivateKey().decrypt(
-                authenticate_return_packetBin.getAttributeBytes("SIGNED_CHALLENGE"),
-                padding.OAEP(
-                    mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                    algorithm=hashes.SHA256(),
-                    label=None
-                )
-            )
-
-            if decryptedClientChallenge != serverAuthenticatePacket.getChallengeBytes():
-                raise ValueError("Signed challenge is invalid")
-
-            return client_public_key
-
-        except (ValueError, socket.timeout, socket.error, ConnectionResetError, cryptography.exceptions.NotYetFinalized,
-                cryptography.exceptions.InvalidKey, KeyError):
-            return None
-
-    def __getUserData(self, paramPublicKey: RSAPublicKey) -> str | None:
-        try:
-            # Send user data request
-            serverRequestUserData = RequestUserData()
-            sendPacket(serverRequestUserData, (self.getConnection(), paramPublicKey))
-
-            # Receive user data from client
-            user_dataPacket = self.getPacketCollector().awaitPacket(packet_type=PacketType.C2S_USER_DATA)
-            if user_dataPacket is None:
-                return None
-            userData_packetType, userData_packetBin = user_dataPacket
-
-            if userData_packetType != PacketType.C2S_USER_DATA:
-                raise ValueError("Packet ID invalid")
-
-            displayNameLength = userData_packetBin.getAttribute("DISPLAY_NAME_LENGTH")
-            displayName = intToBase64(userData_packetBin.getAttribute("DISPLAY_NAME"))
-
-            return displayName[:min(displayNameLength, CHANNEL_USER_DISPLAY_NAME_MAX)]
-
-        except (ValueError, socket.timeout, socket.error, ConnectionResetError):
-            return None
-
-    def __getServerErrors(self) -> list[str]:
-        userErrors = []
-        if (self.getServer().getNumberOfUsers() + 1) > self.getServer().getMaxNumberOfUsers():
-            userErrors.append("Server is full")
-
-        if self.getConnection().getsockname()[0] in self.getServer().getBannedUsers():
-            userErrors.append("You are banned from this channel.")
-
-        return userErrors
-
-
-
-    def __startListener(self):
-        try:
-            while not self.__stop.is_set():
-
-                packet =  self.getPacketCollector().awaitPacket()
-                if packet is None:
-                    return
-
-                packetType, packetBin = packet
-
-                match packetType:
-                    case PacketType.C2S_ALIVE_RESPONSE:
-                        self.getServer().getUser(self.getConnection()).renewTime()
-
-                    case PacketType.C2S_USER_LEAVE:
-                        self.getServer().unregisterUser(self.getConnection())
-
-                    case PacketType.C2S_TEXT_MESSAGE:
-                        encodedMessage = packetBin.getAttributeBytes("MESSAGE")
-                        if encodedMessage is None:
-                            continue
-
-                        message = encodedMessage.decode('utf-8')
-                        if len(message) > MAXIMUM_MESSAGE_SIZE:
-                            self.sendInfoToUser(f"Message exceeds maximum size of: {MAXIMUM_MESSAGE_SIZE}")
-                            continue
-
-                        textMessagePacket = TextMessagePacket(self.getUser().getDisplayName(), message)
-                        sendPacket(textMessagePacket, self.getServer().getAllRecipients())
-
-        except (ValueError, socket.timeout, socket.error, ConnectionResetError):
-            return
-
-    def run(self):
-        try:
-            # 1) Start packet collector service
-            packetCollector = PacketCollector(self.getConnection(), self.getServer().getPrivateKey(), self.__stop)
-            packetCollector.start()
-            self.__setPacketCollector(packetCollector)
-
-            # 2) Get public key
-            publicKey = self.__authenticate()
-            if publicKey is None:
-                return
-
-            # 3) Get user info (just display name but expandable for later)
-            displayName = self.__getUserData(publicKey)
-            if displayName is None:
-                return
-
-            # 4) Check if user passes checks i.e bans, and number of people online
-            server_errors = self.__getServerErrors()
-
-            if len(server_errors) > 0:
-                clientDisconnectPacket = ClientDisconnectPacket(", ".join(server_errors))
-                sendPacket(clientDisconnectPacket, (self.getConnection(), publicKey))
-                return
-
-            # 5) Register user
-            user = self.getServer().registerUser(displayName, publicKey, self)
-            self.__setUser(user)
-
-            self.__startListener()
-
-            self.getServer().unregisterUser(self.getConnection())
-
-        except Exception:
-            traceback.print_exc()
-
-        finally:
-            # 4) Close socket
-            self.getConnection().close()
-
-
-class PublishChannelService(Service.ServiceThread):
-    def __init__(self, paramServer: Server):
-        super().__init__(Service.ServiceType.SERVER_PUBLISH)
-
-        self.__server = paramServer
-        self.__result = None
-
-    """
-            Getter Methods
-    """
-
-    def getResult(self) -> dict:
-        return self.__result
-
-    def getServer(self) -> Server:
-        return self.__server
-
-    """
-            Methods
-    """
-
-    def __publish(self) -> None | dict:
-
-        channelInfoBin = createChannelInfoBin(self.getServer())
-        channelBin = createChannelBin(self.getServer(), channelInfoBin)
-
-        base85channelBin = intToBase85(channelBin.getResult(),
-                                       nBytes=getBinSize(CHANNEL_BIN_DIMENSIONS) // 8)
-
-        try:
-            json = {
-                "CHANNEL": base85channelBin,
-                "CHANNEL_SECRET": self.getServer().getSecretKey()
-            }
-
-            if self.getServer().isPublic():
-                json["CHANNEL_ID"] = self.getServer().getChannelID()
-
-            response = requests.post(f"{self.getServer().getTerminal()}/validate", json=json)
-
-            return response.json()
-
-        except (requests.RequestException, requests.exceptions.ContentDecodingError):
-            return None
-
-    def run(self):
-        self.__result = self.__publish()
-
-
-class UnPublishChannelService(Service.ServiceThread):
-    def __init__(self, paramServer: Server):
-        super().__init__(Service.ServiceType.SERVER_UNPUBLISH)
-
-        self.__server = paramServer
-        self.__result = None
-
-    """
-            Getter Methods
-    """
-
-    def getResult(self) -> dict:
-        return self.__result
-
-    def getServer(self) -> Server:
-        return self.__server
-
-    """
-            Methods
-    """
-
-    def __unpublish(self):
-
-        try:
-            json = {
-                "CHANNEL_SECRET": self.getServer().getSecretKey()
-            }
-
-            response = requests.post(f"{self.getServer().getTerminal()}/unvalidate", json=json)
-
-            return response.json()
-
-        except (requests.RequestException, requests.exceptions.ContentDecodingError):
-            return None
-
-    def run(self):
-        self.__result = self.__unpublish()
+            raise ServerException(self.getStopEvent(), ServerException.FAILED_TO_PUBLISH_CHANNEL)
 
 
 def generateRandomSequence(length: tuple | int) -> str:
@@ -709,7 +1257,6 @@ def generateRandomSequence(length: tuple | int) -> str:
     :param length:
     :return:
     """
-
     if isinstance(length, tuple):
         length = random.randint(length[0],
                                 length[1])
@@ -754,14 +1301,30 @@ def generateRandomSecretKey(length=CHANNEL_SECRET_KEY_LENGTH) -> str:
 
 
 def xorRing(value0: int, value1: int) -> int:
+    """
+    XOR Ring two ints
+    :param value0: int1
+    :param value1: int2
+    :return: xor result
+    """
     return value0 ^ value1
 
 
 def generateAuthenticationID(paramAuthSum) -> list[int]:
+    """
+    Generates an authentication sequence
+    :param paramAuthSum:
+    :return:
+    """
     return [authCount := paramAuthSum - random.randint(0, paramAuthSum), paramAuthSum - authCount]
 
 
 def createChannelInfoBin(paramServer: Server) -> Bin:
+    """
+    Creates the channel info bin
+    :param paramServer: Server
+    :return: Channel info bin
+    """
     channelInfoBin = Bin(CHANNEL_INFO_BIN_DIMENSIONS)
 
     # UNIQUE AUTH
@@ -813,7 +1376,7 @@ def createChannelInfoBin(paramServer: Server) -> Bin:
                               ("IP", 128, ip_data.get("ip_binary")),
                               ("Z", ip_attribute_size - placement - 128, ArbitraryValue.RANDOMISE)])
             case _:
-                raise ValueError("Invalid IP format")
+                raise ServerException(None, ServerException.INVALID_IP_FORMAT)
 
     channelInfoBin.setAttribute("IP_PLACEMENT", placement)
 
@@ -826,12 +1389,17 @@ def createChannelInfoBin(paramServer: Server) -> Bin:
     return channelInfoBin
 
 
-def createChannelBin(paramServer: Server, paramChannelInfoBin: Bin) -> Bin:
+def createChannelBin(paramServer: Server) -> Bin:
+    """
+    Creates the channel info bin and then adds xor rings
+    :param paramServer:
+    :return:
+    """
     channelBin = Bin(CHANNEL_BIN_DIMENSIONS)
 
     # Channel Info Bin
     channelNameHash = hashlib.sha512(paramServer.getChannelID().encode()).hexdigest()
-    channelInfoBinXOR = xorRing(int(channelNameHash, 16), paramChannelInfoBin.getResult())
+    channelInfoBinXOR = xorRing(int(channelNameHash, 16), createChannelInfoBin(paramServer).getResult())
     channelBin.setAttribute("CHANNEL_INFO_BIN", channelInfoBinXOR)
 
     # Channel Secret Bin

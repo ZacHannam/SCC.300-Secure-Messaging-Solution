@@ -1,17 +1,15 @@
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 import hashlib
 from cryptography.hazmat.primitives import serialization
-import random
-import math
+import os
 
 import channel.packet.Packet as Packet
-from utils.BinarySequencer import Bin, getAttributeSize
+from utils.BinarySequencer import Bin
 from channel.packet.PacketDimensions import C2S_AUTHENTICATE_DIMENSIONS
 
 
-def generateRandomChallenge(paramChallengeLength) -> int:
-    randomBits = random.getrandbits(paramChallengeLength)
-    return randomBits
+def generateRandomChallenge() -> bytes:
+    return os.urandom(32)
 
 
 class ClientAuthenticatePacket(Packet.Packet):
@@ -20,7 +18,7 @@ class ClientAuthenticatePacket(Packet.Packet):
 
         self.__channelID = paramChannelID
         self.__clientPublicKey = paramClientPublicKey
-        self.__challenge = generateRandomChallenge(getAttributeSize(C2S_AUTHENTICATE_DIMENSIONS, "CHALLENGE"))
+        self.__randomChallenge: bytes = generateRandomChallenge()
 
     def getChannelID(self) -> str:
         return self.__channelID
@@ -40,13 +38,8 @@ class ClientAuthenticatePacket(Packet.Packet):
 
         return public_key_der
 
-    def getChallenge(self) -> int:
-        return self.__challenge
-
-    def getChallengeBytes(self) -> bytes:
-        return self.getChallenge().to_bytes(int(math.ceil(
-            getAttributeSize(C2S_AUTHENTICATE_DIMENSIONS, "CHALLENGE") // 8)),
-                                                             byteorder="big")
+    def getChallenge(self) -> bytes:
+        return self.__randomChallenge
 
     def build(self) -> Bin:
         packet_bin = Bin(C2S_AUTHENTICATE_DIMENSIONS)

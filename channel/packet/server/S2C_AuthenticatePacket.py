@@ -1,17 +1,15 @@
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 import hashlib
 from cryptography.hazmat.primitives import serialization
-import random
-import math
+import os
 
 import channel.packet.Packet as Packet
-from utils.BinarySequencer import Bin, getAttributeSize
+from utils.BinarySequencer import Bin
 from channel.packet.PacketDimensions import S2C_AUTHENTICATE_DIMENSIONS
 
 
-def generateRandomChallenge(paramChallengeLength) -> int:
-    randomBits = random.getrandbits(paramChallengeLength)
-    return randomBits
+def generateRandomChallenge() -> bytes:
+    return os.urandom(32)
 
 
 class ServerAuthenticatePacket(Packet.Packet):
@@ -21,7 +19,7 @@ class ServerAuthenticatePacket(Packet.Packet):
         self.__channelID = paramChannelID
         self.__clientPublicKey = paramClientPublicKey
         self.__signedChallenge = paramSignedChallenge
-        self.__challenge = generateRandomChallenge(getAttributeSize(S2C_AUTHENTICATE_DIMENSIONS, "CHALLENGE"))
+        self.__randomChallenge = generateRandomChallenge()
 
     def getChannelID(self) -> str:
         return self.__channelID
@@ -44,13 +42,8 @@ class ServerAuthenticatePacket(Packet.Packet):
     def getSignedChallenge(self) -> bytes:
         return self.__signedChallenge
 
-    def getChallenge(self) -> int:
-        return self.__challenge
-
-    def getChallengeBytes(self) -> bytes:
-        return self.getChallenge().to_bytes(int(math.ceil(
-            getAttributeSize(S2C_AUTHENTICATE_DIMENSIONS, "CHALLENGE") // 8)),
-                                                             byteorder="big")
+    def getChallenge(self) -> bytes:
+        return self.__randomChallenge
 
     def build(self) -> Bin:
         packet_bin = Bin(S2C_AUTHENTICATE_DIMENSIONS)
