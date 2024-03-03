@@ -3,7 +3,7 @@ import random
 
 import channel.packet.Packet as Packet
 from utils.BinarySequencer import Bin
-from channel.packet.PacketDimensions import C2S_CHALLENGE_RETURN_DIMENSIONS
+from channel.packet.PacketDimensions import C2S_AUTHENTICATE_RETURN_DIMENSIONS
 
 
 def generateRandomChallenge(paramChallengeLength) -> int:
@@ -11,9 +11,9 @@ def generateRandomChallenge(paramChallengeLength) -> int:
     return randomBits
 
 
-class ClientChallengeReturnPacket(Packet.Packet):
+class ClientAuthenticateReturnPacket(Packet.Packet):
     def __init__(self, paramChannelID: str, paramSignedChallenge: bytes):
-        super().__init__(Packet.PacketType.C2S_CHALLENGE_RETURN, False)
+        super().__init__(Packet.PacketType.C2S_AUTHENTICATE_RETURN, False)
 
         self.__channelID = paramChannelID
         self.__signedChallenge = paramSignedChallenge
@@ -29,7 +29,7 @@ class ClientChallengeReturnPacket(Packet.Packet):
         return self.__signedChallenge
 
     def build(self) -> Bin:
-        packet_bin = Bin(C2S_CHALLENGE_RETURN_DIMENSIONS)
+        packet_bin = Bin(C2S_AUTHENTICATE_RETURN_DIMENSIONS)
 
         packet_bin.setAttribute("CHANNEL_HASH", self.getChannelIDHash())
         packet_bin.setAttribute("SIGNED_CHALLENGE", self.getSignedChallengeBytes())

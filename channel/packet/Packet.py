@@ -16,9 +16,9 @@ from Properties import PACKET_MAX_SIZE
 
 
 class PacketType(Enum):
-    C2S_CHALLENGE = (0x01, C2S_CHALLENGE_DIMENSIONS)  # Sent to server to challenge / get public key
-    S2C_CHALLENGE = (0x02, S2C_CHALLENGE_DIMENSIONS)  # Sent to client to challenge / send public key
-    C2S_CHALLENGE_RETURN = (0x03, C2S_CHALLENGE_RETURN_DIMENSIONS)  # Sent to server to validate challenge
+    C2S_AUTHENTICATE = (0x01, C2S_AUTHENTICATE_DIMENSIONS)  # Sent to server to challenge / get public key
+    S2C_AUTHENTICATE = (0x02, S2C_AUTHENTICATE_DIMENSIONS)  # Sent to client to challenge / send public key
+    C2S_AUTHENTICATE_RETURN = (0x03, C2S_AUTHENTICATE_RETURN_DIMENSIONS)  # Sent to server to validate challenge
 
     S2C_REQUEST_USER_DATA = (0x11, S2C_REQUEST_USER_DATA)  # Ask the client for user data
     C2S_USER_DATA = (0x12, C2S_USER_DATA)

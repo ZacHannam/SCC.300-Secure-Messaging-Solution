@@ -19,6 +19,17 @@ english = {
 
     "CHANNEL_CLIENT_DISCONNECT": "(%channel_id) You have been disconnected",
     "CHANNEL_CLIENT_DISCONNECT_REASON": "(%channel_id) Disconnect reason: %reason",
+
+    "MESSENGER_USAGE": "Expected Usage: %usage",
+    "MESSENGER_EXCEPTION": "Exception Occurred: %exception",
+    "BANNED_USER": "Banned User: %user_name",
+    "FAILED_BANNED_USER": "Failed to ban user: %user_name",
+    "MESSENGER_COMMAND": "%command: %arguments",
+    "MESSENGER_START": "Starting Messenger Application",
+    "MESSENGER_NO_CHANNEL": "Failed to find channel: %channel_id",
+    "MESSENGER_JOIN_FAIL": "Failed to connect to channel: %channel_id | %channel_id",
+    "MESSENGER_NO_ACTIVE_CHANNEL": "You must be connected to a channel to send a message",
+    "EMPTY_LINE": "",
 }
 
 

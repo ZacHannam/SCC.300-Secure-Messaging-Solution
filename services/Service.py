@@ -3,19 +3,20 @@ from enum import Enum, auto
 
 
 class ServiceType(Enum):
-    TERMINAL_VALIDATE           = auto()  # Upload key to terminal                                C     REMOVE
+    TERMINAL_VALIDATE           = auto()  # Upload key to terminal                                C
 
     SERVER_PUBLISH              = auto()  # Create an entry on the directory                      C
+    SERVER_UNPUBLISH            = auto()  # Remove an entry on the directory using secret         C
 
     TERMINAL_SCAN               = auto()  # Scans the terminal using channel key                  C
     TERMINAL_SCAN_TH            = auto()  # Individual scanner process (faster than one thread)   C
 
     SERVER_HOST                 = auto()  # Host the channel                                      C
-    SERVER_CONNECTION           = auto()  # Connect to the client                                 W
+    SERVER_CONNECTION           = auto()  # Connect to the client                                 C
     SERVER_ALIVE                = auto()  # Runs to check if the client is still alive            C
     SERVER_TUNNEL               = auto()  # Service to tunnel                                     C
 
-    CLIENT_CONNECTION           = auto()  # Connect to the host                                   W
+    CLIENT_CONNECTION           = auto()  # Connect to the host                                   C
 
     SEND_PACKET                 = auto()  # Send a packet between client and host                 C
     PACKET_COLLECTOR            = auto()  # Service to collect packets and present them whole     C

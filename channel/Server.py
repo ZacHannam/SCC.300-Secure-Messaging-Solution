@@ -23,7 +23,7 @@ import services.Service as Service
 from utils.BinarySequencer import Bin, ArbitraryValue, getBinSize
 from utils.codecs.Base85 import intToBase85
 from channel.packet.Packet import sendPacket, PacketType, PacketCollector
-from channel.packet.server.S2C_ChallengePacket import ServerChallengePacket
+from channel.packet.server.S2C_AuthenticatePacket import ServerAuthenticatePacket
 from channel.packet.server.S2C_RequestUserDataPacket import RequestUserData
 from channel.packet.server.S2C_UserLeavePacket import UserLeavePacket
 from channel.packet.server.S2C_UserJoinPacket import UserJoinPacket
@@ -66,6 +66,9 @@ class User:
 class Server:
     def __init__(self, paramTerminal: str, channel_id=None, secret_key=None, port=DEFAULT_PORT_SERVER,
                  tunnel=None, public=False, max_users=20, banned_users=None):
+        if not (paramTerminal.startswith("http://") or paramTerminal.startswith("https://")):
+            paramTerminal = f"http://{paramTerminal}"
+
         self.__terminal = paramTerminal
 
         self.__channelID = channel_id if channel_id is not None else generateRandomChannelID()
@@ -201,7 +204,15 @@ class Server:
     def getBannedUsers(self) -> list[str]:
         return self.__bannedUsers
 
-    def banUser(self, paramConnection):
+    def banUser(self, paramDisplayName):
+        for user in self.getUsers():
+            if user.getDisplayName == paramDisplayName:
+                self.__banUser(user.getServerConnectionService().getConnection())
+                return True
+        return False
+
+
+    def __banUser(self, paramConnection):
         self.__bannedUsers.append(paramConnection.getsockname[0])
         self.unregisterUser(paramConnection)
 
@@ -254,9 +265,18 @@ class Server:
     """
 
     def stop(self):
+        unpublishService = UnPublishChannelService(self)
+        unpublishService.start()
+
         self.unregisterAllUsers(disconnect_reason="Server stopping.")
         self.getServerAliveService().stop()
         self.getServerHostService().stop()
+
+
+        unpublishService.join()
+        if not unpublishService.getResult()['SUCCESS']:
+            raise RuntimeError("Failed to unvalidate server")
+
 
     def __startServer(self):
         # 1) Check if terminal is available
@@ -317,6 +337,7 @@ class ServerAliveService(Service.ServiceThread):
             sendPacket(AlivePacket(), self.getServer().getAllRecipients())
 
             self.__stop.wait(ALIVE_TIME)
+
 
 class ServerHostService(Service.ServiceThread):
     def __init__(self, paramServer: Server):
@@ -422,27 +443,27 @@ class ServerConnectionService(Service.ServiceThread):
         infoMessagePacket = InfoMessagePacket(paramMessage)
         self.sendPacket(infoMessagePacket)
 
-    def __challenge(self) -> RSAPublicKey | None:
+    def __authenticate(self) -> RSAPublicKey | None:
         try:
 
-            # Validate challenge
-            challengePacket = self.getPacketCollector().awaitPacket(packet_type=PacketType.C2S_CHALLENGE)
-            if challengePacket is None:
+            # Validate authentication
+            authenticatePacket = self.getPacketCollector().awaitPacket(packet_type=PacketType.C2S_AUTHENTICATE)
+            if authenticatePacket is None:
                 return None
-            challenge_packetType, challenge_packetBin = challengePacket
+            authenticate_packetType, authenticate_packetBin = authenticatePacket
 
-            if challenge_packetBin.getAttribute("CHANNEL_HASH") != self.getServer().getChannelIDHash():
+            if authenticate_packetBin.getAttribute("CHANNEL_HASH") != self.getServer().getChannelIDHash():
                 raise ValueError("Channel Hash invalid")
 
-            der_key_size = challenge_packetBin.getAttribute("PUBLIC_KEY_LENGTH")
-            der_key = challenge_packetBin.getAttribute("CLIENT_PUBLIC_KEY").to_bytes(der_key_size, byteorder="big")
+            der_key_size = authenticate_packetBin.getAttribute("PUBLIC_KEY_LENGTH")
+            der_key = authenticate_packetBin.getAttribute("CLIENT_PUBLIC_KEY").to_bytes(der_key_size, byteorder="big")
 
             client_public_key = serialization.load_der_public_key(
                 der_key,
                 backend=default_backend())
 
             clientEncryptedChallenge = client_public_key.encrypt(
-                challenge_packetBin.getAttributeBytes("CHALLENGE"),
+                authenticate_packetBin.getAttributeBytes("CHALLENGE"),
                 padding.OAEP(
                     mgf=padding.MGF1(algorithm=hashes.SHA256()),
                     algorithm=hashes.SHA256(),
@@ -451,23 +472,24 @@ class ServerConnectionService(Service.ServiceThread):
             )
 
             # Send back challenge
-            serverChallengePacket = ServerChallengePacket(self.getServer().getChannelID(),
-                                                          self.getServer().getPublicKey(),
-                                                          clientEncryptedChallenge)
+            serverAuthenticatePacket = ServerAuthenticatePacket(self.getServer().getChannelID(),
+                                                                self.getServer().getPublicKey(),
+                                                                clientEncryptedChallenge)
 
-            sendPacket(serverChallengePacket, (self.getConnection(), None))
+            sendPacket(serverAuthenticatePacket, (self.getConnection(), None))
 
             # Get registration packet
-            challenge_returnPacket = self.getPacketCollector().awaitPacket(packet_type=PacketType.C2S_CHALLENGE_RETURN)
-            if challenge_returnPacket is None:
+            authenticate_returnPacket = self.getPacketCollector()\
+                .awaitPacket(packet_type=PacketType.C2S_AUTHENTICATE_RETURN)
+            if authenticate_returnPacket is None:
                 return None
-            challenge_return_packetType, challenge_return_packetBin = challenge_returnPacket
+            authenticate_return_packetType, authenticate_return_packetBin = authenticate_returnPacket
 
-            if challenge_return_packetBin.getAttribute("CHANNEL_HASH") != self.getServer().getChannelIDHash():
+            if authenticate_return_packetBin.getAttribute("CHANNEL_HASH") != self.getServer().getChannelIDHash():
                 raise ValueError("Channel Hash invalid")
 
             decryptedClientChallenge = self.getServer().getPrivateKey().decrypt(
-                challenge_return_packetBin.getAttributeBytes("SIGNED_CHALLENGE"),
+                authenticate_return_packetBin.getAttributeBytes("SIGNED_CHALLENGE"),
                 padding.OAEP(
                     mgf=padding.MGF1(algorithm=hashes.SHA256()),
                     algorithm=hashes.SHA256(),
@@ -475,7 +497,7 @@ class ServerConnectionService(Service.ServiceThread):
                 )
             )
 
-            if decryptedClientChallenge != serverChallengePacket.getChallengeBytes():
+            if decryptedClientChallenge != serverAuthenticatePacket.getChallengeBytes():
                 raise ValueError("Signed challenge is invalid")
 
             return client_public_key
@@ -507,7 +529,7 @@ class ServerConnectionService(Service.ServiceThread):
         except (ValueError, socket.timeout, socket.error, ConnectionResetError):
             return None
 
-    def __getUserErrors(self) -> list[str]:
+    def __getServerErrors(self) -> list[str]:
         userErrors = []
         if (self.getServer().getNumberOfUsers() + 1) > self.getServer().getMaxNumberOfUsers():
             userErrors.append("Server is full")
@@ -560,7 +582,7 @@ class ServerConnectionService(Service.ServiceThread):
             self.__setPacketCollector(packetCollector)
 
             # 2) Get public key
-            publicKey = self.__challenge()
+            publicKey = self.__authenticate()
             if publicKey is None:
                 return
 
@@ -570,10 +592,10 @@ class ServerConnectionService(Service.ServiceThread):
                 return
 
             # 4) Check if user passes checks i.e bans, and number of people online
-            user_errors = self.__getUserErrors()
+            server_errors = self.__getServerErrors()
 
-            if len(user_errors) > 0:
-                clientDisconnectPacket = ClientDisconnectPacket(", ".join(user_errors))
+            if len(server_errors) > 0:
+                clientDisconnectPacket = ClientDisconnectPacket(", ".join(server_errors))
                 sendPacket(clientDisconnectPacket, (self.getConnection(), publicKey))
                 return
 
@@ -642,6 +664,45 @@ class PublishChannelService(Service.ServiceThread):
         self.__result = self.__publish()
 
 
+class UnPublishChannelService(Service.ServiceThread):
+    def __init__(self, paramServer: Server):
+        super().__init__(Service.ServiceType.SERVER_UNPUBLISH)
+
+        self.__server = paramServer
+        self.__result = None
+
+    """
+            Getter Methods
+    """
+
+    def getResult(self) -> dict:
+        return self.__result
+
+    def getServer(self) -> Server:
+        return self.__server
+
+    """
+            Methods
+    """
+
+    def __unpublish(self):
+
+        try:
+            json = {
+                "CHANNEL_SECRET": self.getServer().getSecretKey()
+            }
+
+            response = requests.post(f"{self.getServer().getTerminal()}/unvalidate", json=json)
+
+            return response.json()
+
+        except (requests.RequestException, requests.exceptions.ContentDecodingError):
+            return None
+
+    def run(self):
+        self.__result = self.__unpublish()
+
+
 def generateRandomSequence(length: tuple | int) -> str:
     """
     Generate a random sequence containing hyphens to split text
@@ -658,11 +719,6 @@ def generateRandomSequence(length: tuple | int) -> str:
     # Don't use " " or "-" from base64 alphabet for channel ID
     randomCharacterArray = random.choices(re.sub('[- ]', '', BASE_64_ALPHABET), k=length)
     numberOfHyphens = len(randomCharacterArray) // 4
-
-    # Make sure a hyphen is placed in the centre of the string if there are an odd amount of them
-    if numberOfHyphens % 2 == 1:
-        randomCharacterArray[len(randomCharacterArray) // 2] = '-'
-        numberOfHyphens -= 1
 
     # Run through the string to insert hyphens
     for index in range(numberOfHyphens // 2):

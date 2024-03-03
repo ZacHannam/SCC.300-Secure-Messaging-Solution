@@ -144,6 +144,16 @@ class Directory:
             del self.__getDirectory()[duplicate_entry.getChannel()]
             return self.__addEntry(paramChannel, channel_id=channel_id)
 
+    def removeEntry(self, paramSecretKey: str) -> bool:
+
+        with self.__getLock():
+            for key, entry in self.__getDirectory().items():
+                if entry.validateSecretKey(paramSecretKey):
+                    del self.__getDirectory()[key]
+                    return True
+
+            return False
+
 
 app = Flask(__name__)
 directory = Directory()
@@ -155,7 +165,7 @@ def home():
 
 
 @app.route("/validate", methods=['POST'])
-def validate():
+def validateChannel():
     try:
         if request.method != 'POST':
             raise RuntimeError(f"Invalid Method: {request.method}")
@@ -180,6 +190,31 @@ def validate():
         return jsonify({
             "SUCCESS": True,
             "CLIENT": entry.getChannel()
+        })
+
+    except RuntimeError as e:
+
+        return jsonify({
+            "SUCCESS": False,
+            "EXCEPTION": str(e)
+        })
+
+
+@app.route("/unvalidate", methods=['POST'])
+def unvalidateChannel():
+    try:
+        if request.method != 'POST':
+            raise RuntimeError(f"Invalid Method: {request.method}")
+
+        data = request.get_json()
+        secretKey = data['CHANNEL_SECRET']
+
+        response = directory.removeEntry(secretKey)
+        if not response:
+            raise RuntimeError(f"Failed to find channel with secret key: {secretKey}")
+
+        return jsonify({
+            "SUCCESS": True
         })
 
     except RuntimeError as e:

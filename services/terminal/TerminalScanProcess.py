@@ -4,6 +4,7 @@ import hashlib
 
 from services import Service
 from Properties import CHANNEL_INFO_BIN_DIMENSIONS, CHANNEL_BIN_DIMENSIONS
+from services.terminal.TerminalValidateService import TerminalValidateService
 from utils.BinarySequencer import Bin, getBinSize
 from utils.codecs.Base85 import base85ToInt
 
@@ -53,6 +54,13 @@ class TerminalScanService(Service.ServiceThread):
         return self.__directoryEntries
 
     def __getAllDirectoryEntries(self):
+
+        terminalValidateService = TerminalValidateService(self.getTerminal())
+        terminalValidateService.start()
+        terminalValidateService.join()
+
+        if not terminalValidateService.getResult():
+            raise RuntimeError(f"Failed to validate terminal {self.getTerminal()}")
 
         response = requests.get(self.getTerminal())
 

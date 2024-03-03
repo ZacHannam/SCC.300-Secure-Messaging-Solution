@@ -18,7 +18,6 @@ class TerminalValidateService(Service.ServiceThread):
         return self.__result
 
     def __validateTerminal(self) -> bool:
-
         try:
             response = requests.get(self.getTerminalURL() + "/status")
         except requests.RequestException:

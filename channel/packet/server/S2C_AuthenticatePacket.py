@@ -6,7 +6,7 @@ import math
 
 import channel.packet.Packet as Packet
 from utils.BinarySequencer import Bin, getAttributeSize
-from channel.packet.PacketDimensions import S2C_CHALLENGE_DIMENSIONS
+from channel.packet.PacketDimensions import S2C_AUTHENTICATE_DIMENSIONS
 
 
 def generateRandomChallenge(paramChallengeLength) -> int:
@@ -14,14 +14,14 @@ def generateRandomChallenge(paramChallengeLength) -> int:
     return randomBits
 
 
-class ServerChallengePacket(Packet.Packet):
+class ServerAuthenticatePacket(Packet.Packet):
     def __init__(self, paramChannelID: str, paramClientPublicKey: RSAPublicKey, paramSignedChallenge: bytes):
-        super().__init__(Packet.PacketType.S2C_CHALLENGE, False)
+        super().__init__(Packet.PacketType.S2C_AUTHENTICATE, False)
 
         self.__channelID = paramChannelID
         self.__clientPublicKey = paramClientPublicKey
         self.__signedChallenge = paramSignedChallenge
-        self.__challenge = generateRandomChallenge(getAttributeSize(S2C_CHALLENGE_DIMENSIONS, "CHALLENGE"))
+        self.__challenge = generateRandomChallenge(getAttributeSize(S2C_AUTHENTICATE_DIMENSIONS, "CHALLENGE"))
 
     def getChannelID(self) -> str:
         return self.__channelID
@@ -49,11 +49,11 @@ class ServerChallengePacket(Packet.Packet):
 
     def getChallengeBytes(self) -> bytes:
         return self.getChallenge().to_bytes(int(math.ceil(
-            getAttributeSize(S2C_CHALLENGE_DIMENSIONS, "CHALLENGE") // 8)),
+            getAttributeSize(S2C_AUTHENTICATE_DIMENSIONS, "CHALLENGE") // 8)),
                                                              byteorder="big")
 
     def build(self) -> Bin:
-        packet_bin = Bin(S2C_CHALLENGE_DIMENSIONS)
+        packet_bin = Bin(S2C_AUTHENTICATE_DIMENSIONS)
 
         packet_bin.setAttribute("CHANNEL_HASH", self.getChannelIDHash())
 
