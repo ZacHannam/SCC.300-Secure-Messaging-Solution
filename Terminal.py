@@ -3,156 +3,208 @@ from threading import Lock
 import hashlib
 import os
 import hmac
+import base64
 
-from Properties import CHANNEL_BIN_DIMENSIONS, CHANNEL_INFO_BIN_DIMENSIONS
-from utils.codecs.Base85 import base85ToInt, intToBase85, BASE_85_ALPHABET
-from utils.BinarySequencer import getBinSize, Bin
+from Properties import CHANNEL_BIN_DIMENSIONS, CHANNEL_INFO_BIN_DIMENSIONS, CHANNEL_BIN_INVALIDATE_DIMENSIONS
+from utils.codecs.Base85 import intToBase85
+from utils.BinarySequencer import getBinSizeBytes, Bin
 
 TERMINAL_VERSION = "beta0.1"  # Do not change
-TERMINAL_HMAC = os.urandom(32)  # Should be saved in database
+TERMINAL_HMAC = os.urandom(32)
 
-ENTRY_SIZE_B85 = int((getBinSize(CHANNEL_BIN_DIMENSIONS) // 8) * (5 / 4))
+ENTRY_SIZE_B85 = int(getBinSizeBytes(CHANNEL_BIN_DIMENSIONS) * (5 / 4))
 
 
 class Entry:
-    def __init__(self, paramChannel: str, channel_id=None):
-        assert len(paramChannel) == ENTRY_SIZE_B85
+    def __init__(self, paramHashedSecretKey: bytes, paramInfoBin: Bin, paramChannelID: str | None):
+        """
+        Entry stores all information
+        :param paramHashedSecretKey:
+        :param paramInfoBin:
+        :param paramChannelID:
+        """
+        self.__hmacSecretKey: int = int(hmac.new(paramHashedSecretKey, TERMINAL_HMAC,
+                                                 hashlib.sha256).hexdigest(), 16)
 
-        # Original channel id
-        self.__channel_bin = Bin(CHANNEL_BIN_DIMENSIONS,
-                                 population=base85ToInt(paramChannel))
 
-        secret_key = self.__channel_bin.getAttribute("CHANNEL_SECRET_BIN")
-        secret_key_bytes = secret_key.to_bytes(self.__channel_bin.getAttributeSize("CHANNEL_SECRET_BIN") // 8,
-                                               byteorder="big", signed=False)
 
-        # Change the secret key with the terminal hmac to obscure the key
-        # In case the secret key being used is common
-        self.__channel_bin.setAttribute("CHANNEL_SECRET_BIN", int(hmac.new(secret_key_bytes,
-                                                                           TERMINAL_HMAC,
-                                                                           hashlib.sha256).hexdigest(),
-                                                                  16))
+        self.__infoBin: Bin = paramInfoBin
 
-        # Convert back into base85
-        self.__channel = intToBase85(self.__channel_bin.getResult())
-        self.__channelID = channel_id
+        self.__authHi: int = paramInfoBin.getAttribute("UNIQUE_AUTH_HI")
+        self.__authLo: int = paramInfoBin.getAttribute("UNIQUE_AUTH_LO")
+        self.__channelID: str | None = paramChannelID
 
-    """
-            Getter Methods
-    """
+        self.__cachedValue: dict = {}
+        self.reCache()
 
-    def getChannel(self) -> str:
-        return self.__channel
+    def getCachedValue(self) -> dict:
+        """
+        Cached value to be shown on terminal
+        :return: Cached value (str)
+        """
+        return self.__cachedValue
 
-    def getChannelID(self) -> str:
+    def getHmacSecretKey(self) -> int:
+        """
+        Returns the hashed secret key
+        :return: secret key (bytes)
+        """
+        return self.__hmacSecretKey
+
+    def getAuthHi(self) -> int:
+        """
+        Return Auth Hi
+        :return: auth hi (int)
+        """
+        return self.__authHi
+
+    def getAuthLo(self) -> int:
+        """
+        Return Auth Lo
+        :return: auth lo (int)
+        """
+        return self.__authLo
+
+    def getInfoBin(self) -> Bin:
+        """
+        Returns the info bin
+        :return: Channel Info Bin (Bin)
+        """
+        return self.__infoBin
+
+    def setInfoBin(self, paramInfoBin) -> None:
+        """
+        Sets the info bin
+        :param paramInfoBin:
+        :return: None
+        """
+        self.__infoBin = paramInfoBin
+
+    def getChannelID(self) -> str | None:
+        """
+        Get the channel id if public
+        :return: Channel ID
+        """
         return self.__channelID
 
-    def getChannelBin(self) -> Bin:
-        return self.__channel_bin
-
-    def getChannelInfoBin(self) -> Bin:
-        return Bin(CHANNEL_INFO_BIN_DIMENSIONS,
-                   population=self.__channel_bin.getAttribute("CHANNEL_INFO_BIN"))
+    def setChannelID(self, paramChannelID: str | None) -> None:
+        """
+        Set the channel id
+        :param paramChannelID: channel id if public else None
+        :return: None
+        """
+        self.__channelID = paramChannelID
 
     """
             Methods
     """
 
-    def validateSecretKey(self, paramSecretKey: str) -> bool:
-        entry_secretKey = self.getChannelBin().getAttribute("CHANNEL_SECRET_BIN")
-        entry_secretKeySize = self.getChannelBin().getAttributeSize("CHANNEL_SECRET_BIN") // 8
+    def reCache(self) -> None:
+        """
+        Re caches the value on the terminal
+        :return: None
+        """
 
-        secret_key = hmac.new(
-            hashlib.sha256(paramSecretKey.encode()).digest(),
-            TERMINAL_HMAC,
-            hashlib.sha256).digest()
+        channelBin: Bin = Bin(CHANNEL_BIN_DIMENSIONS)
 
-        return hmac.compare_digest(entry_secretKey.to_bytes(entry_secretKeySize, byteorder="big", signed=False),
-                                   secret_key)
+        # Change the secret key with the terminal hmac to obscure the key
+        channelBin.setAttribute("CHANNEL_SECRET_BIN", self.getHmacSecretKey())
+        # Add info bin
+        channelBin.setAttribute("CHANNEL_INFO_BIN", self.getInfoBin().getResult())
+        self.__cachedValue = dict(( (intToBase85(channelBin.getResult(), nBytes=channelBin.getBinSizeBytes()),
+                                    "Private" if self.getChannelID() is None else self.getChannelID()), ))
 
 
 class Directory:
     def __init__(self):
-        self.__lock = Lock()
-        self.__directory = {}
+        """
+        Directory stores all of the terminal entries and presents them
+        """
+        self.__lock: Lock = Lock()
+        self.__entries: list[Entry] = []
 
     """
             Getter Methods
     """
 
-    def __getLock(self) -> Lock:
+    def getLock(self) -> Lock:
+        """
+        Returns the lock used for concurrency control
+        :return:
+        """
         return self.__lock
 
-    def __getDirectory(self) -> dict:
-        return self.__directory
+    def getEntries(self) -> list[Entry]:
+        """
+        Returns all entries on the terminal
+        :return:
+        """
+        return self.__entries
+
+    """
+            Static Methods
+    """
+
+    @staticmethod
+    def validateSecretKey(paramHashedSecretKey: bytes, paramEntry: Entry) -> bool:
+        """
+        Validate the Secret key given against an entry
+        :return: If they match
+        """
+
+        hmacSecretKey: int = int(hmac.new(paramHashedSecretKey, TERMINAL_HMAC, hashlib.sha256).hexdigest(), 16)
+
+        return hmacSecretKey == paramEntry.getHmacSecretKey()
 
     """
             Methods
     """
 
-    def json(self) -> Response:
+    def findInDirectory(self, paramAuthHi: int, paramAuthLo: int) -> Entry | None:
+        """
+        Find a matching entry channel in the directory
+        :param paramAuthHi: Auth Hi
+        :param paramAuthLo: Auth Lo
+        :return: Returns the entry if it finds one else None
+        """
 
-        str_directory = {}
-        for key, entry in self.__getDirectory().items():
-            str_directory[key] = "Private" if entry.getChannelID() is None else entry.getChannelID()
+        for entry in self.getEntries():
+            xor_authLo = paramAuthLo ^ entry.getAuthLo()
+            xor_authHi = paramAuthHi ^ entry.getAuthHi()
 
-        return jsonify(str_directory)
-
-    """
-            Entry Methods
-    """
-
-    def __validateEntry(self, paramChannelInfoBin: Bin) -> Entry | None:
-
-        uniqueAuth_LO, uniqueAuth_HI = paramChannelInfoBin.getAttribute("UNIQUE_AUTH_LO", "UNIQUE_AUTH_HI")
-
-        with self.__getLock():
-            for directory_channel in self.__getDirectory().values():
-
-                directoryAuth_LO, directoryAuth_HI = directory_channel.getChannelInfoBin() \
-                    .getAttribute("UNIQUE_AUTH_LO", "UNIQUE_AUTH_HI")
-
-                if uniqueAuth_LO ^ directoryAuth_LO == uniqueAuth_HI ^ directoryAuth_HI:
-                    return directory_channel
+            # Check if auth matches
+            if xor_authLo == xor_authHi:
+                return entry
         return None
 
-    def __addEntry(self, paramChannel, channel_id=None) -> None | Entry:
-        entry = Entry(paramChannel, channel_id=channel_id)
-        self.__getDirectory()[entry.getChannel()] = entry
-        return entry
+    def addEntry(self, paramEntry: Entry) -> None:
+        """
+        Add entry to the directory
+        :param paramEntry: entry to add
+        :return: None
+        """
+        self.getEntries().append(paramEntry)
 
-    def addEntry(self, paramChannel: str, channel_secret=None, channel_id=None) -> None | Entry:
-        assert len(paramChannel) == ENTRY_SIZE_B85
+    def removeEntry(self, paramEntry: Entry):
+        """
+        Remove an entry from the directory
+        :param paramEntry:
+        :return:
+        """
+        self.getEntries().remove(paramEntry)
 
-        # Channel bin from the channel id
-        channel_bin = Bin(CHANNEL_BIN_DIMENSIONS,
-                          population=base85ToInt(paramChannel))
+    def json(self) -> Response:
+        """
+        Return all all directories in json form
+        :return:
+        """
 
-        # Channel info bin from the channel bin
-        channel_info_bin = Bin(CHANNEL_INFO_BIN_DIMENSIONS,
-                               population=channel_bin.getAttribute("CHANNEL_INFO_BIN"))
+        str_directory = {}
+        for entry in self.getEntries():
+            for key, value in entry.getCachedValue().items():
+                str_directory[key] = value
 
-        duplicate_entry = self.__validateEntry(channel_info_bin)
-
-        with self.__getLock():
-            if duplicate_entry is None:
-                return self.__addEntry(paramChannel, channel_id=channel_id)
-
-            if channel_secret is None or not duplicate_entry.validateSecretKey(channel_secret):
-                raise RuntimeError(f"Channel already exists: {paramChannel}")
-
-            del self.__getDirectory()[duplicate_entry.getChannel()]
-            return self.__addEntry(paramChannel, channel_id=channel_id)
-
-    def removeEntry(self, paramSecretKey: str) -> bool:
-
-        with self.__getLock():
-            for key, entry in self.__getDirectory().items():
-                if entry.validateSecretKey(paramSecretKey):
-                    del self.__getDirectory()[key]
-                    return True
-
-            return False
+        return jsonify(str_directory)
 
 
 app = Flask(__name__)
@@ -167,32 +219,50 @@ def home():
 @app.route("/validate", methods=['POST'])
 def validateChannel():
     try:
+        # 1) Check if it is a post request
         if request.method != 'POST':
             raise RuntimeError(f"Invalid Method: {request.method}")
 
+        # 2) Get the json version
         data = request.get_json()
-        channel = data['CHANNEL']
-
-        # Check if there are any illegal characters
-        for character in channel:
-            if character not in BASE_85_ALPHABET:
-                raise RuntimeError(f"Invalid Character: {character}")
-
-        # Check size of channel
-        if len(channel) != ENTRY_SIZE_B85:
-            raise RuntimeError(f"Invalid length: {len(channel)}")
-
+        channel_bytes: bytes = base64.b64decode(data['CHANNEL_BYTES'])
         channelID = data['CHANNEL_ID'] if 'CHANNEL_ID' in data else None
-        channelSecret = data['CHANNEL_SECRET'] if 'CHANNEL_SECRET' in data else None
 
-        entry = directory.addEntry(channel, channel_id=channelID, channel_secret=channelSecret)
+        # 4) Check if it is correct number of bytes
+        if len(channel_bytes) != getBinSizeBytes(CHANNEL_BIN_DIMENSIONS):
+            raise RuntimeError("Invalid Size")
+
+        # 5) Split into parts
+        channelBin = Bin(CHANNEL_BIN_DIMENSIONS, population=channel_bytes)
+        # Secret Key is the SHA-256 of the secret and Channel Info is the channel Info Bin
+        secretKey: bytes = channelBin.getAttributeBytes("CHANNEL_SECRET_BIN")
+        channelInfo: int = channelBin.getAttribute("CHANNEL_INFO_BIN")
+
+        # 6) Get Channel Auth
+        infoBin = Bin(CHANNEL_INFO_BIN_DIMENSIONS, population=channelInfo)
+        authHi: int = infoBin.getAttribute("UNIQUE_AUTH_HI")
+        authLo: int = infoBin.getAttribute("UNIQUE_AUTH_LO")
+
+        # 7) Check for entry in directory
+        entry = directory.findInDirectory(authHi, authLo)
+        if entry is not None:
+            validate = directory.validateSecretKey(secretKey, entry)
+            if not validate:
+                raise RuntimeError("Secret key is invalid!")
+
+            entry.setInfoBin(infoBin)      # Update the channel information
+            entry.setChannelID(channelID)  # Just in case they want to make it public / private
+            entry.reCache()                # Re-cache the data uploaded
+        else:
+            directory.addEntry(Entry(secretKey, infoBin, channelID))
 
         return jsonify({
             "SUCCESS": True,
-            "CLIENT": entry.getChannel()
         })
 
     except RuntimeError as e:
+
+        print(e)
 
         return jsonify({
             "SUCCESS": False,
@@ -203,15 +273,40 @@ def validateChannel():
 @app.route("/unvalidate", methods=['POST'])
 def unvalidateChannel():
     try:
+        # 1) Check if it is a post request
         if request.method != 'POST':
             raise RuntimeError(f"Invalid Method: {request.method}")
 
-        data = request.get_json()
-        secretKey = data['CHANNEL_SECRET']
 
-        response = directory.removeEntry(secretKey)
-        if not response:
-            raise RuntimeError(f"Failed to find channel with secret key: {secretKey}")
+
+        # 2) Get the json version
+        data = request.get_json()
+        channel_bytes: bytes = base64.b64decode(data['CHANNEL_BYTES'])
+
+        # 4) Check if it is correct number of bytes
+        if len(channel_bytes) != getBinSizeBytes(CHANNEL_BIN_INVALIDATE_DIMENSIONS):
+            raise RuntimeError("Invalid Size")
+
+        # 5) Split into parts
+        channelBin = Bin(CHANNEL_BIN_INVALIDATE_DIMENSIONS, population=channel_bytes)
+        # Secret Key is the SHA-256 of the secret and Channel Info is the channel Info Bin
+        secretKey: bytes = channelBin.getAttributeBytes("CHANNEL_SECRET_BIN")
+        authHi: int = channelBin.getAttribute("UNIQUE_AUTH_HI")
+        authLo: int = channelBin.getAttribute("UNIQUE_AUTH_LO")
+
+        # 6) Check if it exists
+        entry = directory.findInDirectory(authHi, authLo)
+        if entry is None:
+            raise RuntimeError("Could not find channel!")
+
+        # 7) Check for permission
+        validate = directory.validateSecretKey(secretKey, entry)
+        if not validate:
+            raise RuntimeError("Secret key is invalid!")
+
+        # 8) Remove the entry from the directory
+        directory.removeEntry(entry)
+
 
         return jsonify({
             "SUCCESS": True

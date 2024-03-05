@@ -1,4 +1,9 @@
+import string
 from enum import Enum
+
+CHANNEL_BIN_INVALIDATE_DIMENSIONS = [(   "CHANNEL_SECRET_BIN" ,  256     ),
+                                     (   "UNIQUE_AUTH_HI"     ,  32      ),
+                                     (   "UNIQUE_AUTH_LO"     ,  32      )]
 
 CHANNEL_BIN_DIMENSIONS        = [(   "CHANNEL_SECRET_BIN" ,  256     ),
                                  (   "CHANNEL_INFO_BIN"   ,  512     )]
@@ -35,7 +40,9 @@ NAMES_LIST_FILE                = "names_list.txt"                       # List o
 TERMINAL_VERSION               = "beta0.1"                              # Terminal and Client version
 PACKET_MAX_SIZE                = 8192                                   # Packet size maximum (bits)
 ALIVE_TIME                     = 1                                      # Seconds between sending alive packets
+ALIVE_TIMEOUT                  = 3                                      # Alive timeout
 MAXIMUM_MESSAGE_SIZE           = 500                                    # Character limit for messages
 COMMAND_KEY                    = '/'                                    # Messenger command character
 TERMINAL_PROTOCOL              = ["http://", "https://"]                # Protocols that the terminal could use
 DEFAULT_BAN_REASON             = "You were banned from this channel!"   # Default ban reason
+LEGAL_DISPLAY_NAME_CHARACTERS  = string.ascii_letters + string.digits   # List of allowed username characters

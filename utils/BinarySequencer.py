@@ -269,8 +269,13 @@ def dropAttribute(paramBin: Bin, *paramDimension: str):
     return new_bin
 
 
-def getAttributeSize(paramDimensions: list[tuple], *paramAttribute: Any) -> tuple | int | None:
+def getAttributeSize(paramDimensions: list[tuple], *paramAttribute: Any) -> tuple | int:
     results = [dict(paramDimensions).get(attribute, None) for attribute in paramAttribute]
+    return results[0] if len(results) == 1 else tuple(results)
+
+
+def getAttributeSizeBytes(paramDimensions: list[tuple], *paramAttribute: Any) -> tuple | int:
+    results = getAttributeSize(paramDimensions, paramAttribute)
     return results[0] if len(results) == 1 else tuple(results)
 
 

@@ -1,162 +1,320 @@
 import re
-import traceback
+from typing import Any
 
 from Properties import COMMAND_KEY
-from Language import info
-from channel.Client import Client, ClientException, getClientFromTerminalScan
-from channel.Server import Server, ServerException
+from Language import info, awaitInput
+from channel.Client import Client, getClientFromTerminalScan
+from channel.Server import Server
+from channel.MessengerExceptions import MessengerException
 
 
 class Messenger:
     def __init__(self):
-        self.activeClient = None
-        self.activeServer = None
-        self.clients = []
-        self.servers = []
+        """
+        Main Messenger Application
+        """
+        self.__activeClient: Client | None   = None
+        self.__activeServer: Server | None   = None
+        self.__clients: list[Client]         = []
+        self.__servers: list[Server]         = []
 
-        self.printStartMessage()
-        self.mainloop()
+        self.printStartMessage()  # Print the start message
+        self.mainloop()           # Start the main loop
 
-    @staticmethod
-    def __awaitInput() -> str:
-        print(f" > ", flush=True, end='')  # Display the initial prompt  # Ensure the prompt is displayed immediately
-        user_input = input()  # Get user input
-        print("\033[F\033[K", flush=True, end='')  # Move cursor up and clear the line
-        return user_input
+    """
+            Getter and Setter Methods
+    """
 
-    def createChannel(self, *args, **kwargs):
-        try:
+    """
+            Active Client and Server
+    """
 
-            server_kwargs = dict([(key, kwargs[key]) for key in ['channel_id', "secret_key", "port", "public"]
-                                  if key in kwargs])
+    def getActiveClient(self) -> Client | None:
+        """
+        Returns the active client that works else None
+        :return: active client or None
+        """
+        # Check if the active client is None
+        if self.__activeClient is None:
+            return None
 
-            client_kwargs = {} if "name" not in kwargs else {"client_displayName": kwargs["name"]}
-            join = kwargs['join'] if 'join' in kwargs else True
+        # Make sure the active client is still alive
+        if self.__activeClient.getStopEvent().is_set():
+            self.removeClient(self.__activeClient)
 
-            server = Server(*args, **server_kwargs)
-            self.servers.append(server)
-            self.activeServer = server
+        return self.__activeClient
 
-            if join:
-                client = Client(server.getTerminal(), server.getChannelID(), server.getIP()['ip'], server.getPort(),
-                                **client_kwargs)
+    def setActiveClient(self, paramClient: Client) -> None:
+        """
+        Sets the active client
+        :param: Client to make active
+        :return: None
+        """
+        self.__activeClient = paramClient
+        if self.__activeClient is not None:
 
-                self.clients.append(client)
-                self.activeClient = client
+            if self.__activeClient.getStopEvent().is_set():
+                # Will not allow it to be set and recursively find one that isn't stopped until None
+                self.removeClient(self.__activeClient)
+                return
 
-        except (RuntimeError, OSError, ClientException, ServerException) as error:
-            traceback.print_exc()
-            info("MESSENGER_EXCEPTION", exception=error)
+            info("MESSENGER_ACTIVE_CLIENT", channel_id=paramClient.getChannelID())
+        else:
+            info("MESSENGER_ACTIVE_CLIENT", channel_id="None")
 
-    def deleteChannel(self, **kwargs):
-        selectedChannel: Server = self.activeServer
-        if "channel_id" in kwargs:
-            for channel in self.servers:
-                if channel.getChannelID == kwargs.get("channel_id"):
-                    selectedChannel = channel
+    def getActiveServer(self) -> Server | None:
+        """
+        Returns the active server that works else None
+        :return: active server or None
+        """
+        # Check if the active client is None
+        if self.__activeServer is None:
+            return None
+
+        # Make sure the active client is still alive
+        if self.__activeServer.getStopEvent().is_set():
+            self.removeServer(self.__activeServer)
+
+        return self.__activeServer
+
+    def setActiveServer(self, paramServer: Server) -> None:
+        """
+        Sets the active server
+        :param: Server to make active
+        :return: None
+        """
+
+        self.__activeServer = paramServer
+        if self.__activeServer is not None:
+
+            if self.__activeServer.getStopEvent().is_set():
+                # Will not allow it to be set and recursively find one that isn't stopped until None
+                self.removeServer(self.__activeServer)
+                return
+
+            info("MESSENGER_ACTIVE_SERVER", channel_id=paramServer.getChannelID())
+        else:
+            info("MESSENGER_ACTIVE_SERVER", channel_id="None")
+
+
+    """
+            Clients and Servers
+    """
+
+    def getClients(self) -> list[Client]:
+        """
+        Returns a list of clients
+        :return: Clients list
+        """
+        return self.__clients
+
+    def addClient(self, paramClient: Client) -> None:
+        """
+        Add a client and set it to active client
+        :param paramClient:
+        :return:
+        """
+        self.__clients.append(paramClient)
+        self.setActiveClient(paramClient)
+
+    def removeClient(self, paramClient: Client) -> None:
+        """
+        Remove a client
+        :param paramClient: Client to be removed
+        :return: None
+        """
+        # Stop the client if its not already stopped
+        if not paramClient.getStopEvent().is_set():
+            paramClient.leaveServer()  # Leave the server
+            paramClient.getStopEvent().set()  # Set the flag (Should be done when leaving the server)
+
+        # Remove client from the list
+        self.__clients.remove(paramClient)
+
+        # Check if active client is the client to be removed, if so replace it
+        if self.__activeClient == paramClient:
+            self.setActiveClient(self.__clients[0] if len(self.__clients) else None)
+
+
+
+    def getServers(self) -> list[Server]:
+        """
+        Returns a list of servers
+        :return: Servers list
+        """
+        return self.__servers
+
+    def addServer(self, paramServer: Server) -> None:
+        """
+        Add a server and set it to active server
+        :param paramServer:
+        :return:
+        """
+        self.__servers.append(paramServer)
+        self.setActiveServer(paramServer)
+
+    def removeServer(self, paramServer: Server) -> None:
+        """
+        Remove a server
+        :param paramServer: Server to be removed
+        :return: None
+        """
+        # Stop the server if its not already stopped
+        if not paramServer.getStopEvent().is_set():
+            paramServer.stopServer()  # Stop the server
+            paramServer.getStopEvent().set()  # Set the flag (Should be done when leaving the server)
+
+        # Remove server from the list
+        self.__servers.remove(paramServer)
+
+        # Check if active client is the client to be removed, if so replace it
+        if self.__activeServer == paramServer:
+            self.setActiveServer(self.__servers[0] if len(self.__servers) else None)
+
+
+    """
+            Command Methods
+    """
+
+
+    def createServer(self, paramTerminal, paramJoin=True, **kwargs) -> None:
+        """
+        Create the channel for the user
+        :param paramJoin: If the client should join automatically
+        :param paramTerminal: Terminal Argument
+        :param kwargs: "channel_id", "secret_key", "port", "public", "join", "name"
+        :return: None
+        """
+        # 1) Establish the necessary key word arguments
+        server_kwargs = dict([(key, kwargs[key]) for key in ["channel_id", "secret_key", "port", "public"]
+                              if key in kwargs])
+        client_kwargs = {} if "name" not in kwargs else {"client_displayName": kwargs["name"]}
+
+        # 2) Create the server and save it / make it active
+        server = Server(paramTerminal, **server_kwargs)
+        self.addServer(server)
+
+        if paramJoin:
+            # 3) Join a client to server
+            client = Client(server.getTerminal(), server.getChannelID(), server.getIP()['ip'], server.getPort(),
+                            **client_kwargs)
+
+            self.addClient(client)
+
+    def deleteServer(self, channel_id=None) -> None:
+        """
+        Delete a channel (Server)
+        :param channel_id: channel_id to be removed
+        :return: None
+        """
+
+        # 1) Find the channel to delete
+        selectedServer = self.getActiveServer()
+        if channel_id is not None:
+            for server in self.getServers():
+                if server.getChannelID() == channel_id:
+                    selectedServer = server
                     break
             else:
-                info("MESSENGER_NO_CHANNEL", channel_id=kwargs.get("channel_id"))
+                info("MESSENGER_NO_CHANNEL", channel_id=channel_id)
+                return
 
-        if selectedChannel is not None:
-            try:
-                selectedChannel.stopServer()
-                self.servers.remove(selectedChannel)
-                self.activeServer = None if len(self.servers) < 1 else self.servers[0]
-            except (RuntimeError, OSError) as error:
-                info("MESSENGER_EXCEPTION", exception=error)
-        else:
-            info("MESSENGER_NO_CHANNEL", channel_id=kwargs.get("channel_id"))
+        if selectedServer is None:
+            info("MESSENGER_NO_CHANNEL", channel_id="None")
+            return
 
-    def joinChannel(self, paramTerminal, paramChannelID, **kwargs):
-        try:
-            name = None if "name" not in kwargs else kwargs["name"]
+        # 2) Remove the server which will stop it and select a new active server
+        self.removeServer(selectedServer)
 
-            client = getClientFromTerminalScan(paramTerminal, paramChannelID, client_displayName=name)
+    def joinServer(self, paramTerminal, paramChannelID, **kwargs) -> None:
+        """
+        Join a channel as a client
+        :param paramTerminal: Terminal the channel is on
+        :param paramChannelID: Channel ID
+        :param kwargs: "name"
+        :return: None
+        """
 
-            if client is None:
-                info("MESSENGER_JOIN_FAIL", terminal=paramTerminal, channel_id=paramChannelID)
+        # 1) Check if the display name is defined
+        client_kwargs = {} if "name" not in kwargs else {"client_displayName": kwargs["name"]}
 
-            self.clients.append(client)
-            self.activeClient = client
+        # 2) Get the client from the terminal scan
+        client = getClientFromTerminalScan(paramTerminal, paramChannelID, **client_kwargs)
 
-        except (RuntimeError, OSError) as error:
-            info("MESSENGER_EXCEPTION", exception=error)
+        if client is None:
+            info("MESSENGER_JOIN_FAIL", terminal=paramTerminal, channel_id=paramChannelID)
+            return
 
-    def leaveChannel(self, **kwargs):
-        selectedChannel: Client = self.activeClient
-        if "channel_id" in kwargs:
-            for channel in self.clients:
-                if channel.getChannelID == kwargs.get("channel_id"):
-                    selectedChannel = channel
+        # 3) Add the client
+        self.addClient(client)
+
+    def leaveServer(self, channel_id=None) -> None:
+        """
+        Leave the channel
+        :param channel_id: Channel to leave
+        :return: None
+        """
+        # 1) Find the client to delete
+        selectedClient = self.getActiveClient()
+        if channel_id is not None:
+            for client in self.getClients():
+                if client.getChannelID() == channel_id:
+                    selectedClient = client
                     break
             else:
-                info("MESSENGER_NO_CHANNEL", channel_id=kwargs.get("channel_id"))
+                info("MESSENGER_NO_CHANNEL", channel_id=channel_id)
+                return
 
-        if selectedChannel is not None:
-            try:
-                selectedChannel.leaveServer()
-                self.clients.remove(selectedChannel)
-                self.activeClient = None if len(self.clients) < 1 else self.clients[0]
-            except (RuntimeError, OSError) as error:
-                info("MESSENGER_EXCEPTION", exception=error)
-        else:
-            info("MESSENGER_NO_CHANNEL", channel_id=kwargs.get("channel_id"))
+        if selectedClient is None:
+            info("MESSENGER_NO_CHANNEL", channel_id="None")
+            return
 
-    def activeChannel(self, paramChannelID):
-        for channel in self.clients:
-            if channel.getChannelID == paramChannelID:
-                self.activeClient = channel
+        # 2) Leave the server and remove it
+        self.removeClient(selectedClient)
+
+    def activeClient(self, paramChannelID) -> None:
+        """
+        Set the active client
+        :param paramChannelID: Channel ID
+        :return: None
+        """
+        for client in self.getClients():
+            if client.getChannelID == paramChannelID:
+                self.setActiveClient(client)
                 break
         else:
             info("MESSENGER_NO_CHANNEL", channel_id=paramChannelID)
 
-    def activeServer(self, paramChannelID):
-        for server in self.servers:
+    def activeServer(self, paramChannelID) -> None:
+        """
+        Set the active server
+        :param paramChannelID: Channel ID
+        :return: None
+        """
+        for server in self.getServers():
             if server.getChannelID == paramChannelID:
-                self.activeServer = server
+                self.setActiveServer(server)
                 break
         else:
             info("MESSENGER_NO_CHANNEL", channel_id=paramChannelID)
 
-    def banUser(self, paramUserName, **kwargs):
-        selectedChannel: Server = self.activeServer
-        if "channel_id" in kwargs:
-            for channel in self.servers:
-                if channel.getChannelID == kwargs.get("channel_id"):
-                    selectedChannel = channel
-                    break
-            else:
-                info("MESSENGER_NO_CHANNEL", channel_id=kwargs.get("channel_id"))
-
-        if selectedChannel is not None:
-            try:
-                try:
-                    selectedChannel.banUser(paramUserName)
-                    info("BANNED_USER", user_name=paramUserName)
-                except ClientException:
-                    info("FAILED_BANNED_USER", user_name=paramUserName)
-            except (RuntimeError, OSError) as error:
-                info("MESSENGER_EXCEPTION", exception=error)
-        else:
-            info("MESSENGER_NO_CHANNEL", channel_id=kwargs.get("channel_id"))
-
-    def mainloop(self):
+    def mainloop(self) -> None:
+        """
+        Main loop for Messenger
+        :return: None
+        """
         while True:
-            userInput = self.__awaitInput()
+            userInput = awaitInput()  # Await input from the client
 
-            if userInput.startswith(COMMAND_KEY):
-                ArgumentParser(self, userInput)
+            if userInput.startswith(COMMAND_KEY):  # If it is a command
+                ArgumentParser(self, userInput)  # Pass to the argument parser
                 continue
 
-            if self.activeClient is None:
+            if self.getActiveClient() is None:  # Send a message instead
                 info("MESSENGER_NO_ACTIVE_CHANNEL")
                 continue
 
-            self.activeClient.sendMessage(userInput)
-
-
-
+            self.getActiveClient().sendMessage(userInput)
 
     @staticmethod
     def printStartMessage():
@@ -170,82 +328,179 @@ class Messenger:
 
 class ArgumentParser:
     def __init__(self, paramMessenger: Messenger, paramArgument: str):
-        self.__argument = paramArgument
+        """
+        Argument parser to transform command line to method calls
+        :param paramMessenger: Messenger Application
+        :param paramArgument: Console command
+        """
+        self.__argument: str = paramArgument
+        self.__messenger: Messenger = paramMessenger
 
-        if not self.__processArguments():
-            return
+        # To be established variables
+        self.__method: classmethod | None       = None  # Method to be called
+        self.__args: list[Any] | None           = None  # Positional arguments
+        self.__kwargs: dict[str, Any] | None    = None  # Key word arguments
 
-        try:
-            self.preformArgument(paramMessenger)
-        except Exception as exception:
-            info("MESSENGER_EXCEPTION", exception=str(exception))
+        self.__expectedUsage: str | None        = None  # Usage of called command
 
-    def preformArgument(self, paramMessenger: Messenger):
-        self.getMethod()(paramMessenger, *self.getPositionalArgs(), **self.getKeyWordArgs())
+        self.parse()  # Parse the string
 
-    def __getArgument(self):
+
+    """
+            Getter Methods
+    """
+
+    def getArgument(self) -> str:
+        """
+        Get the argument supplied to the class
+        :return: Argument (str)
+        """
         return self.__argument
 
-    def __processArguments(self) -> bool:
-        try:
-            key = self.__getArgument().split(" ")[0].lower()
-            arguments = " ".join(self.__getArgument().split(" ")[1:]).lower()
-            method, command_arguments, arg_types = self.getServerCommands().get(key)
-        except (IndexError, KeyError):
-            raise RuntimeError()  # TO-DO chat instead
+    def getMessenger(self) -> Messenger:
+        """
+        Get the messenger object
+        :return: Messenger
+        """
+        return self.__messenger
 
-        self.__method = method
 
-        self.__key_word_args = dict([(g[0], g[1]) for g in
-                                     [f[1:].split(" ") for f in re.findall(r"(-\w+\s+\w+)", arguments)]])
+    """
+            Established Variables
+    """
 
-        for key, value in self.__key_word_args.items():
-            if key.lower() in arg_types:
-                arg_type = arg_types.get(key.lower())
-                self.__key_word_args[key] = arg_type(value)
-
-        numberOfPositionalArguments = len(re.findall(r"<([^>]*)>", command_arguments))
-
-        self.__positional_args = [arguments.split(" ")[index] for
-                                  index in range(numberOfPositionalArguments)]
-
-        if sum([True for pArg in self.__positional_args if pArg != '']) \
-                == numberOfPositionalArguments:
-            return True
-
-        info("MESSENGER_USAGE", usage=command_arguments)
-        return False
-
-    def getMethod(self):
+    def getMethod(self) -> classmethod | None:
+        """
+        Get the method to call when performing the arguments
+        :return: class method or none if not found
+        """
         return self.__method
 
-    def getKeyWordArgs(self) -> dict:
-        return self.__key_word_args
+    def getArgs(self) -> list[Any] | None:
+        """
+        The positional arguments
+        :return: Positional arguments if found or none
+        """
+        return self.__args
 
-    def getPositionalArgs(self) -> list:
-        return self.__positional_args
+    def getKwargs(self) -> dict[str, Any] | None:
+        """
+        Get the kwargs used when calling the method
+        :return: Kwargs arguments used or None if not found
+        """
+        return self.__kwargs
+
+    def getExpectedUsage(self) -> str | None:
+        """
+        The expected usage of the command being used
+        :return: command or none if unknown
+        """
+        return self.__expectedUsage
+
+
+    """
+            Methods
+    """
+
+    def parse(self) -> None:
+        """
+        Parses and performs the supplied arguments
+        :return: None
+        """
+        # 1) Process the arguments
+        try:
+            self.processArguments()  # Check if it was able to split arguments (will throw exceptions)
+
+            # Possible AssertionError
+            assert self.__method is not None and self.__args is not None and self.__kwargs is not None
+
+        except (TypeError, ValueError, IndexError, AssertionError):  # Catch Any other exception
+            if self.__expectedUsage is not None:  # The command used is known then print that usage
+                info("MESSENGER_USAGE", usage=self.__expectedUsage)
+
+            else:  # Command is not known print the help method
+                info("INVALID_COMMAND", command=self.getArgument())
+                info("EMPTY_LINE")
+                for command, (_, arguments, _) in ArgumentParser.getServerCommands().items():
+                    info("MESSENGER_COMMAND", command=command, arguments=arguments)
+                info("EMPTY_LINE")
+            return  # Return as don't want to run any further
+
+        # 2) Perform the arguments
+        try:
+            self.preformArgument()  # Perform the arguments
+
+        except MessengerException as exception:  # Catch any exception that is thrown when method is run
+            info("MESSENGER_EXCEPTION", exception=exception.message)
+
+    def preformArgument(self) -> None:
+        """
+        Performs the arguments by calling the methods with args and kwargs
+        :return: None
+        """
+        self.getMethod()(self.getMessenger(), *self.getArgs(), **self.getKwargs())
+
+    def processArguments(self) -> None:
+        """
+        Process the arguments into their method, args and kwargs
+        Will throw TypeError, ValueError, IndexError
+        :return: If the arguments successfully processed
+        """
+        # Split the argument into parts | Throws TypeError
+        key = self.getArgument().split(" ")[0].lower()
+
+        # Get only parameters and not command | Throws IndexError
+        arguments = " ".join(self.getArgument().split(" ")[1:])
+
+        # Get the command attributes from server commands | Throws KeyError
+        # 1) Store the method and expected usage
+        self.__method, self.__expectedUsage, arg_types = self.getServerCommands().get(key)
+
+        # 2) Find all positional arguments
+        # Calculate the number of expected positional arguments
+        numberOfPositionalArguments = len(re.findall(r"<([^>]*)>", self.__expectedUsage))
+
+        # Store them as args
+        self.__args = [arguments.split(" ")[index] for
+                       index in range(numberOfPositionalArguments)]
+
+        # Validate the number of positional arguments is matched
+        if sum([True for pArg in self.__args if pArg != '']) \
+                != numberOfPositionalArguments:
+            raise ValueError("Missing positional arguments")
+
+        # 3) Establish the key word arguments
+        # Use regex to find and convert kwargs to dict. Keeping a lowercase key
+        self.__kwargs = dict([(g[0].lower(), g[1]) for g in
+                             [f[1:].split(" ") for f in re.findall(r"(-\w+\s+\w+)", arguments)]])
+
+        # Cast all to the correct type (str -> int, bool, etc)
+        for key, value in self.__kwargs.items():
+            if key in arg_types:
+                arg_type = arg_types.get(key)
+                self.__kwargs[key] = arg_type(value)
 
     @staticmethod
     def getServerCommands() -> dict:
         return {
-            COMMAND_KEY + "create_channel": (Messenger.createChannel, "<terminal> [-channel_id] [-secret_key] "
-                                                                      "[-port] [-public] [-join] [-name]",
+            COMMAND_KEY + "create_server":  (Messenger.createServer, "<terminal> [-channel_id] [-secret_key] "
+                                                                     "[-port] [-public] [-join] [-name]",
                                              {
                                                  "terminal": str, "channel_id": str, "secret_key": str, "port": int,
                                                  "public": bool, "join": bool, "name": str
                                              }),
-            COMMAND_KEY + "delete_channel": (Messenger.deleteChannel, "[-channel_id]",
+            COMMAND_KEY + "delete_server":  (Messenger.deleteServer, "[-channel_id]",
                                              {
                                                  "channel_id": str
                                              }),
 
-            COMMAND_KEY + "join_channel": (Messenger.joinChannel, "<terminal> <channel_id> [-name]",
+            COMMAND_KEY + "join_server":  (Messenger.joinServer, "<terminal> <channel_id> [-name]",
                                            {
                                                "terminal": str, "channel_id": str, "name": str
                                            }),
 
-            COMMAND_KEY + "leave_channel": (Messenger.leaveChannel, "[-channel_id]",
-                                            {
+            COMMAND_KEY + "leave_server": (Messenger.leaveServer, "[-channel_id]",
+                                           {
                                                 "channel_id": str
                                             }),
 
@@ -253,56 +508,12 @@ class ArgumentParser:
                                             {
                                                 "channel_id": str
                                             }),
-            COMMAND_KEY + "active_channel": (Messenger.activeChannel, "<channel_id>",
+            COMMAND_KEY + "active_client":  (Messenger.activeClient, "<channel_id>",
                                              {
                                                  "channel_id": str
                                              }),
-
-            COMMAND_KEY + "ban_user": (Messenger.banUser, "<user_name> [-channel_id]",
-                                       {
-                                           "user_name": str, "channel_id": str
-                                       }),
-
         }
 
 
 if __name__ == "__main__":
     Messenger()
-
-    """
-    server = Server("http://127.0.0.1:5000", public=True)
-
-    client = Client("http://127.0.0.1:5000", server.getChannelID(), "176.35.14.162", server.getPort(),
-                    client_displayName="BossMan")
-    
-    client2 = Client("http://127.0.0.1:5000", server.getChannelID(), "176.35.14.162", server.getPort(),
-                     client_displayName="SpiderMan")
-    
-    client.sendMessage("Wow1")
-    # client2.sendMessage("Wow2")
-
-    # client.leaveServer()
-
-    # client2.sendMessage("I am the only one here")
-
-    time.sleep(1)
-    server.stop()
-
-    time.sleep(1)
-
-    for thread in threading.enumerate():
-        print(thread)
-
-    terminalScanService = TerminalScanService("http://127.0.0.1:5000", server.getChannelID())
-    terminalScanService.start()
-    terminalScanService.join()
-
-    if terminalScanService.getResult() is None:
-        print("Returned None")
-
-    client = getClientFromBin("http://127.0.0.1:5000", server.getChannelID(), terminalScanService.getResult())
-
-    time.sleep(5)
-
-    client.sendMessage("Hello you bitch")
-    """

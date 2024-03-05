@@ -7,7 +7,7 @@ import math
 import random
 from cryptography.exceptions import InvalidKey, InvalidSignature
 from threading import Lock
-import traceback
+import cryptography.exceptions
 
 from channel.packet.PacketDimensions import *
 import services.Service as Service
@@ -16,26 +16,26 @@ from Properties import PACKET_MAX_SIZE
 
 
 class PacketType(Enum):
-    C2S_AUTHENTICATE = (0x01, C2S_AUTHENTICATE_DIMENSIONS)  # Sent to server to challenge / get public key
-    S2C_AUTHENTICATE = (0x02, S2C_AUTHENTICATE_DIMENSIONS)  # Sent to client to challenge / send public key
-    C2S_AUTHENTICATE_RETURN = (0x03, C2S_AUTHENTICATE_RETURN_DIMENSIONS)  # Sent to server to validate challenge
+    C2S_AUTHENTICATE             = (0x01, C2S_AUTHENTICATE_DIMENSIONS)  # Sent to server to challenge / get public key
+    S2C_AUTHENTICATE             = (0x02, S2C_AUTHENTICATE_DIMENSIONS)  # Sent to client to challenge / send public key
+    C2S_AUTHENTICATE_RETURN      = (0x03, C2S_AUTHENTICATE_RETURN_DIMENSIONS)  # Sent to server to validate challenge
 
-    S2C_REQUEST_USER_DATA = (0x11, S2C_REQUEST_USER_DATA)  # Ask the client for user data
-    C2S_USER_DATA = (0x12, C2S_USER_DATA)
+    S2C_REQUEST_USER_DATA        = (0x11, S2C_REQUEST_USER_DATA)  # Ask the client for user data
+    C2S_USER_DATA                = (0x12, C2S_USER_DATA)
 
-    S2C_ALIVE = (0x21, S2C_ALIVE)  # Ask the client if they are alive
-    C2S_ALIVE_RESPONSE = (0x22, C2S_ALIVE_RESPONSE)  # Respond to the server if they are alive
+    S2C_ALIVE                    = (0x21, S2C_ALIVE)  # Ask the client if they are alive
+    C2S_ALIVE_RESPONSE           = (0x22, C2S_ALIVE_RESPONSE)  # Respond to the server if they are alive
 
-    S2C_USER_JOIN = (0x31, S2C_USER_JOIN)  # Sent to client when user joins
-    S2C_USER_LEAVE = (0x32, S2C_USER_LEAVE)  # Sent to all clients when someone leaves channel
+    S2C_USER_JOIN                = (0x31, S2C_USER_JOIN)  # Sent to client when user joins
+    S2C_USER_LEAVE               = (0x32, S2C_USER_LEAVE)  # Sent to all clients when someone leaves channel
 
-    S2C_TEXT_MESSAGE = (0x41, S2C_TEXT_MESSAGE)  # Sent to client to send a message
-    C2S_TEXT_MESSAGE = (0x42, C2S_TEXT_MESSAGE)  # Sent to server to send a message
+    S2C_TEXT_MESSAGE             = (0x41, S2C_TEXT_MESSAGE)  # Sent to client to send a message
+    C2S_TEXT_MESSAGE             = (0x42, C2S_TEXT_MESSAGE)  # Sent to server to send a message
 
-    S2C_INFO_MESSAGE = (0x51, S2C_INFO_MESSAGE)  # Send info to a client
+    S2C_INFO_MESSAGE             = (0x51, S2C_INFO_MESSAGE)  # Send info to a client
 
-    S2C_CLIENT_DISCONNECT = (0x61, S2C_CLIENT_DISCONNECT)  # Sent to client to kick them from the server
-    C2S_USER_LEAVE = (0x62, C2S_USER_LEAVE)  # Sent to server when user leaves
+    S2C_CLIENT_DISCONNECT        = (0x61, S2C_CLIENT_DISCONNECT)  # Sent to client to kick them from the server
+    C2S_USER_LEAVE               = (0x62, C2S_USER_LEAVE)  # Sent to server when user leaves
 
 
 PACKET_TYPE_ENUMERATION = dict([(packet.value[0], packet) for packet in PacketType])
@@ -120,7 +120,7 @@ class PacketSender(Service.ServiceThread):
     def getClientPublicKey(self) -> RSAPublicKey:
         return self.__clientPublicKey
 
-    def run(self):
+    def run_safe(self):
 
         isEncrypted, packetBins = self.getPacket().getPackets()
         assert (isEncrypted and self.getClientPublicKey() is not None) or not isEncrypted
@@ -206,7 +206,7 @@ class PacketCollector(Service.ServiceThread):
 
             return None
 
-    def run(self):
+    def run_safe(self):
         try:
             while not self.__stop.is_set():
                 # attempt decrypt on data if there is a public key
@@ -284,8 +284,8 @@ class PacketCollector(Service.ServiceThread):
                         self.getFinalisedPackets().append((packetType, packet_bin))
                     del self.getPackets()[key]
 
-        except Exception:
-            traceback.print_exc()
+        except (cryptography.exceptions.NotYetFinalized, cryptography.exceptions.InvalidKey):
+            pass
 
 
 def getPacketTypeFromPacketID(paramPacketType: int) -> PacketType | None:

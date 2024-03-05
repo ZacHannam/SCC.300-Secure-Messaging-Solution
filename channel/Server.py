@@ -1,6 +1,7 @@
 import random
 import re
 import hashlib
+import string
 from functools import lru_cache
 import cryptography.exceptions
 from cryptography.hazmat.primitives import serialization, hashes
@@ -12,16 +13,15 @@ import requests
 import socket
 import time
 from threading import Event
+import base64
 
 from Properties import CHANNEL_ID_LENGTH, CHANNEL_SECRET_KEY_LENGTH, DEFAULT_PORT_SERVER, CHANNEL_BIN_DIMENSIONS, \
     CHANNEL_INFO_BIN_DIMENSIONS, CHANNEL_USER_DISPLAY_NAME_MAX, ALIVE_TIME, MAXIMUM_MESSAGE_SIZE, IPType, \
-    TERMINAL_PROTOCOL, DEFAULT_BAN_REASON
+    TERMINAL_PROTOCOL, DEFAULT_BAN_REASON, ALIVE_TIMEOUT, LEGAL_DISPLAY_NAME_CHARACTERS, TERMINAL_VERSION,\
+    CHANNEL_BIN_INVALIDATE_DIMENSIONS
 from channel.packet import Packet
-from utils.codecs.Base64 import BASE_64_ALPHABET, intToBase64
-from services.terminal.TerminalValidateService import TerminalValidateService
 import services.Service as Service
-from utils.BinarySequencer import Bin, ArbitraryValue, getBinSize
-from utils.codecs.Base85 import intToBase85
+from utils.BinarySequencer import Bin, ArbitraryValue
 from channel.packet.Packet import sendPacket, PacketType, PacketCollector
 from channel.packet.server.S2C_AuthenticatePacket import ServerAuthenticatePacket
 from channel.packet.server.S2C_RequestUserDataPacket import RequestUserData
@@ -32,69 +32,68 @@ from channel.packet.server.S2C_InfoMessagePacket import InfoMessagePacket
 from channel.packet.server.S2C_TextMessagePacket import TextMessagePacket
 from channel.packet.server.S2C_ClientDisconnectPacket import ClientDisconnectPacket
 from Language import info
+from channel.MessengerExceptions import ServerException
 
 
-class ServerException(Exception):
-    class Exception:
-        def __init__(self, paramFatal: bool, paramMessage: str):
-            """
-            Exception class for client exception
-            :param paramFatal:
-            :param paramMessage:
-            """
-            self.fatal = paramFatal
-            self.message = paramMessage
-
-        def isFatal(self) -> bool:
-            """
-            Returns if the exception is fatal
-            :return: Exception is fatal (bool)
-            """
-            return self.fatal
-
-        def getMessage(self) -> str:
-            """
-            Returns the message for the exception
-            :return: The exception message (str)
-            """
-            return self.message
-
-    """
-            Exceptions
-    """
-
-    SOCKET_EXCEPTION = Exception(True, "Socket failure")
-    INVALID_TERMINAL_URL = Exception(True, "Invalid Terminal URL")
-    FAILED_TO_COLLECT_PACKET = Exception(True, "Failed to collect packet")
-    INVALID_CHANNEL_ID_HASH = Exception(True, "Invalid channel ID hash in packet")
-    CLIENT_FAILED_CHALLENGE = Exception(True, "Server failed authenticate challenge")
-    MISSING_RETURN_PACKET = Exception(True, "Failed to authenticate, client didn't send response packet")
-    CRYPTOGRAPHY_EXCEPTION = Exception(True, "Cryptography failed")
-    FAILED_TO_AUTHENTICATE = Exception(True, "Server failed to authenticate")
-    FAILED_TO_GET_USER_DATA = Exception(True, "Failed to get user data")
-    FAILED_TO_GET_CLIENT_PUBLIC_KEY = Exception(True, "Failed to get client public key")
-    FAILED_TO_GET_CLIENT_CREDENTIALS = Exception(True, "Failed to get client credentials")
-    CLIENT_REJECTED = Exception(True, "Client was rejected from joining server")
-    FAILED_TO_GET_IP = Exception(True, "Failed to get external IP")
-    FAILED_TO_UNVALIDATE_TERMINAL = Exception(True, "Failed to unvalidate terminal")
-    FAILED_TO_VALIDATE_TERMINAL = Exception(True, "Failed to validate terminal")
-    FAILED_TO_PUBLISH_CHANNEL = Exception(True, "Failed to publish channel")
-    FAILED_TO_UNPUBLISH_CHANNEL = Exception(True, "Failed to unpublish channel")
-
-    INVALID_IP_FORMAT = Exception(False, "Failed to correctly format IP")
-    FAILED_TO_FIND_USER = Exception(False, "Failed to find user by their display name")
-
-    def __init__(self, paramStopSignal: Event | None, paramException: Exception):
+class TerminalValidateService(Service.ServiceThread):
+    def __init__(self, paramTerminalURL: str):
         """
-        Client Exception thrown in the client
-        :param paramStopSignal: The stop signal for the client
-        :param paramException: The exception being used
+        Validate the terminal
+        :param paramTerminalURL:
         """
-        super().__init__()
-        self.message = paramException.getMessage()  # Set the exception message
+        super().__init__(Service.ServiceType.TERMINAL_VALIDATE)
 
-        if paramException.isFatal() and paramStopSignal is not None:  # Stop the client threads if it is fatal
-            paramStopSignal.set()
+        self.__terminalURL: str = paramTerminalURL
+        self.__result: None | bool = None
+
+    def getTerminalURL(self) -> str:
+        """
+        Get the terminal URL
+        :return: terminal url (str)
+        """
+        return self.__terminalURL
+
+    def getResult(self) -> bool:
+        """
+        Get the result value
+        :return: result bool
+        """
+        return self.__result
+
+    def validateTerminal(self) -> None:
+        """
+        Validate the terminal
+        :return: None
+        """
+        try:
+            response = requests.get(self.getTerminalURL() + "/status")
+        except requests.RequestException:
+            self.__result = False
+            return
+
+        # Check request has reached the terminal
+        if response.status_code != 200:
+            self.__result = False
+            return
+
+        # Check if it is a json response
+        if response.headers.get('Content-Type') != "application/json":
+            self.__result = False
+            return
+
+        try:
+            responseJson = response.json()
+
+            terminal, version = responseJson['version'].split(":")
+            active = bool(responseJson['active'])
+
+            self.__result = active and version == TERMINAL_VERSION and terminal == "TERMINAL"
+
+        except (KeyError, ValueError, AttributeError):
+            self.__result = False
+
+    def run_safe(self):
+        self.validateTerminal()
 
 
 class ServerConnectionService(Service.ServiceThread):
@@ -289,12 +288,18 @@ class ServerConnectionService(Service.ServiceThread):
         :param paramReason: reason for kick
         :return: None
         """
+        # Disconnect User
         clientDisconnectPacket = ClientDisconnectPacket(paramReason)
         self.sendPacket(clientDisconnectPacket)
 
+        # Stop client connection
+        self.stop()
+
+
     def banUser(self, paramReason: str | None):
         self.kickUser(paramReason)
-        self.stop()
+        self.getServerBanList().append(self.getClientAddress()[0])
+
 
 
     """
@@ -459,11 +464,14 @@ class ServerConnectionService(Service.ServiceThread):
 
             userData_packetType, userData_packetBin = user_dataPacket  # Unpack packet
 
-            displayNameLength = userData_packetBin.getAttribute("DISPLAY_NAME_LENGTH")  # Display name length
-            displayName = intToBase64(userData_packetBin.getAttribute("DISPLAY_NAME"))  # Display name
+            encodedDisplayName = userData_packetBin.getAttributeBytes("DISPLAY_NAME")  # Display name
+            if encodedDisplayName is None or len(encodedDisplayName) == 0:  # Check the display name
+                raise ServerException(self.getStopEvent(), ServerException.FAILED_TO_GET_USER_DATA)
+            displayName = ''.join([char for char in encodedDisplayName.decode()
+                                   if char in LEGAL_DISPLAY_NAME_CHARACTERS])  # Strip any illegal characters
 
             # 3) Set the user display name
-            self.setDisplayName(displayName[:min(displayNameLength, CHANNEL_USER_DISPLAY_NAME_MAX)])
+            self.setDisplayName(displayName[:min(len(displayName), CHANNEL_USER_DISPLAY_NAME_MAX)])
 
         except (socket.timeout, socket.error, ConnectionResetError):  # If a socket exception happens
             raise ServerException(self.getStopEvent(), ServerException.SOCKET_EXCEPTION)
@@ -526,7 +534,7 @@ class ServerConnectionService(Service.ServiceThread):
             except (socket.timeout, socket.error, ConnectionResetError):  # If a socket exception happens
                 raise ServerException(self.getStopEvent(), ServerException.SOCKET_EXCEPTION)
 
-    def run(self):
+    def run_safe(self):
         try:
 
             # 1) Authenticate and get public key
@@ -591,15 +599,16 @@ class ServerAliveService(Service.ServiceThread):
         """
         self.getStopEvent().set()
 
-    def run(self):
+    def run_safe(self):
         alivePacket = AlivePacket()  # Create an alive packet
 
         while not self.getStopEvent().is_set():  # Run until the stop flag is set
             start_currentTime = int(time.time())  # Get the current time
 
             for user in self.getServerUserList():  # Get each user connected
-                if user.getLastAliveTime() + ALIVE_TIME < start_currentTime:
+                if user.getLastAliveTime() + ALIVE_TIMEOUT < start_currentTime:
                     user.kickUser("Timed out.")  # Time out if the last alive time was too long away
+                    continue
                 user.sendPacket(alivePacket)
 
             difference_currentTime: int = int(time.time()) - start_currentTime  # Get the difference in times
@@ -681,12 +690,15 @@ class ServerHostService(Service.ServiceThread):
         """
         return self.__channelID
 
-    def run(self):
+    def run_safe(self):
         host = socket.gethostname()
         port = self.getServerPort()
 
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
-            server_socket.bind((host, port))
+            try:
+                server_socket.bind((host, port))
+            except OSError:
+                raise ServerException(self.getStopEvent(), ServerException.SERVER_ALREADY_ON_PORT)
             self.getReadyEvent().set()
 
             server_socket.listen()
@@ -714,13 +726,12 @@ class ServerHostService(Service.ServiceThread):
 
 class PublishChannelService(Service.ServiceThread):
     def __init__(self, paramStopEvent: Event, paramTerminal: str, paramChannelID: str,
-                 paramSecretKey: str, paramIsPublic: bool, paramChannelBin: Bin):
+                 paramIsPublic: bool, paramChannelBin: Bin):
         """
         Method to publish channel to the terminal
         :param paramStopEvent: Server stop event
         :param paramTerminal: Server terminal url
         :param paramChannelID: Server channel ID
-        :param paramSecretKey: Server secret key
         :param paramIsPublic: Server public setting
         :param paramChannelBin: Server channel bin
         """
@@ -730,7 +741,6 @@ class PublishChannelService(Service.ServiceThread):
         self.__stopEvent: Event = paramStopEvent
         self.__terminal: str = paramTerminal
         self.__channelID: str = paramChannelID
-        self.__secretKey: str = paramSecretKey
         self.__isPublic: bool = paramIsPublic
         self.__result: dict | None = None
 
@@ -751,13 +761,6 @@ class PublishChannelService(Service.ServiceThread):
         :return: Channel Bin
         """
         return self.__channelBin
-
-    def getSecretKey(self) -> str:
-        """
-        Returns the channel secret key
-        :return: Server secret key
-        """
-        return self.__secretKey
 
     def isPublic(self) -> bool:
         """
@@ -797,14 +800,11 @@ class PublishChannelService(Service.ServiceThread):
         :return: None
         """
 
-        # Convert channel bin to base 85
-        base85channelBin = intToBase85(self.getChannelBin().getResult(),
-                                       nBytes=getBinSize(CHANNEL_BIN_DIMENSIONS) // 8)
+        channelBinBytes = self.getChannelBin().getResultBytes()
 
         try:
             json = {
-                "CHANNEL": base85channelBin,
-                "CHANNEL_SECRET": self.getSecretKey()
+                "CHANNEL_BYTES": base64.b64encode(channelBinBytes).decode('utf-8')
             }
 
             if self.isPublic():
@@ -817,23 +817,22 @@ class PublishChannelService(Service.ServiceThread):
         except (requests.RequestException, requests.exceptions.ContentDecodingError):
             raise ServerException(self.getStopEvent(), ServerException.FAILED_TO_PUBLISH_CHANNEL)
 
-    def run(self):
+    def run_safe(self):
         self.publish()
 
 
 class UnPublishChannelService(Service.ServiceThread):
-    def __init__(self, paramTerminal: str, paramSecretKey: str, paramStopEvent: Event):
+    def __init__(self, paramStopEvent: Event, paramTerminal: str, paramChannelBin: Bin ):
         """
         Method to unpublish channel
         :param paramTerminal: Server terminal
-        :param paramSecretKey: Server secret key
         :param paramStopEvent: Server stop event
         """
         super().__init__(Service.ServiceType.SERVER_UNPUBLISH)
 
         self.__terminal: str = paramTerminal
-        self.__secretKey: str = paramSecretKey
         self.__stopEvent: Event = paramStopEvent
+        self.__channelBin: Bin = paramChannelBin
         self.__result: dict | None = None
 
     """
@@ -847,12 +846,12 @@ class UnPublishChannelService(Service.ServiceThread):
         """
         return self.__terminal
 
-    def getSecretKey(self) -> str:
+    def getChannelBin(self) -> Bin:
         """
-        Returns the channel secret key
-        :return: Server secret key
+        Returns the channel bin
+        :return: Channel Bin
         """
-        return self.__secretKey
+        return self.__channelBin
 
     def getStopEvent(self) -> Event:
         """
@@ -879,8 +878,11 @@ class UnPublishChannelService(Service.ServiceThread):
         """
 
         try:
+
+            channelBinBytes = self.getChannelBin().getResultBytes()
+
             json = {
-                "CHANNEL_SECRET": self.getSecretKey()
+                "CHANNEL_BYTES": base64.b64encode(channelBinBytes).decode('utf-8')
             }
 
             response = requests.post(f"{self.getTerminal()}/unvalidate", json=json)
@@ -890,9 +892,8 @@ class UnPublishChannelService(Service.ServiceThread):
         except (requests.RequestException, requests.exceptions.ContentDecodingError):
             raise ServerException(self.getStopEvent(), ServerException.FAILED_TO_UNPUBLISH_CHANNEL)
 
-    def run(self):
+    def run_safe(self):
         self.unpublish()
-
 
 
 class Server:
@@ -1187,7 +1188,8 @@ class Server:
 
     def stopServer(self):
         # Start unvalidate service in terminal
-        unpublishService = UnPublishChannelService(self.getTerminal(), self.getSecretKey(), self.getStopEvent())
+        unpublishService = UnPublishChannelService(self.getStopEvent(), self.getTerminal(),
+                                                   createUnvalidateChannelBin(self))
         unpublishService.start()
 
         # Kick all users
@@ -1226,8 +1228,12 @@ class Server:
         serverHostService.start()  # Start the host service
         self.__serverHostService = serverHostService
 
-        while not serverHostService.getReadyEvent().is_set():  # Wait for host service to be ready
-            continue
+        # Wait for it to start or if it doesnt then return an error
+        while True:
+            if serverHostService.getReadyEvent().is_set():
+                break
+            if self.getStopEvent().is_set():
+                raise ServerException(self.getStopEvent(), ServerException.FAILED_TO_START_HOST_SERVICE)
 
         # 2.1) Send message after service is ready
         info("CHANNEL_CREATE", terminal=self.getTerminal(), channel_id=self.getChannelID(),
@@ -1243,7 +1249,7 @@ class Server:
         # 4) Publish channel public service
 
         publishChannelService = PublishChannelService(self.getStopEvent(), self.getTerminal(), self.getChannelID(),
-                                                      self.getSecretKey(), self.isPublic(), createChannelBin(self))
+                                                      self.isPublic(), createValidateChannelBin(self))
         publishChannelService.start()
         publishChannelService.join()
 
@@ -1264,7 +1270,7 @@ def generateRandomSequence(length: tuple | int) -> str:
     assert isinstance(length, int)
 
     # Don't use " " or "-" from base64 alphabet for channel ID
-    randomCharacterArray = random.choices(re.sub('[- ]', '', BASE_64_ALPHABET), k=length)
+    randomCharacterArray = random.choices(re.sub('[- ]', '', string.ascii_letters), k=length)
     numberOfHyphens = len(randomCharacterArray) // 4
 
     # Run through the string to insert hyphens
@@ -1389,7 +1395,7 @@ def createChannelInfoBin(paramServer: Server) -> Bin:
     return channelInfoBin
 
 
-def createChannelBin(paramServer: Server) -> Bin:
+def createValidateChannelBin(paramServer: Server) -> Bin:
     """
     Creates the channel info bin and then adds xor rings
     :param paramServer:
@@ -1408,3 +1414,23 @@ def createChannelBin(paramServer: Server) -> Bin:
     channelBin.setAttribute("CHANNEL_SECRET_BIN", secretKey)
 
     return channelBin
+
+
+def createUnvalidateChannelBin(paramServer: Server) -> Bin:
+    """
+    Creates the unvalidate channel bin info
+    :param paramServer:
+    :return:
+    """
+
+    unvalidateChannelBin = Bin(CHANNEL_BIN_INVALIDATE_DIMENSIONS)
+
+    channelBin: Bin = createValidateChannelBin(paramServer)
+    infoBin: Bin = Bin(CHANNEL_INFO_BIN_DIMENSIONS, population=channelBin.getAttribute("CHANNEL_INFO_BIN"))
+
+    # Set secret key
+    unvalidateChannelBin.setAttribute("CHANNEL_SECRET_BIN", channelBin.getAttribute("CHANNEL_SECRET_BIN"))
+    unvalidateChannelBin.setAttribute("UNIQUE_AUTH_HI", infoBin.getAttribute("UNIQUE_AUTH_HI"))
+    unvalidateChannelBin.setAttribute("UNIQUE_AUTH_LO", infoBin.getAttribute("UNIQUE_AUTH_LO"))
+
+    return unvalidateChannelBin

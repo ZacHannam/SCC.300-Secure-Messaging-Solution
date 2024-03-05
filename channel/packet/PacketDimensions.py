@@ -28,11 +28,9 @@ C2S_AUTHENTICATE_RETURN_DIMENSIONS = [("CHANNEL_HASH", 256),
         Server -> Client
 """
 
-S2C_USER_JOIN = [("DISPLAY_NAME_LENGTH", ArbitraryValue.DYNAMIC),
-                 ("DISPLAY_NAME", ArbitraryValue.DYNAMIC)]
+S2C_USER_JOIN = [("DISPLAY_NAME", ArbitraryValue.DYNAMIC)]
 
-S2C_USER_LEAVE = [("DISPLAY_NAME_LENGTH", ArbitraryValue.DYNAMIC),
-                  ("DISPLAY_NAME", ArbitraryValue.DYNAMIC)]
+S2C_USER_LEAVE = [("DISPLAY_NAME", ArbitraryValue.DYNAMIC)]
 
 S2C_TEXT_MESSAGE = [("DISPLAY_NAME", ArbitraryValue.DYNAMIC),
                     ("MESSAGE", ArbitraryValue.DYNAMIC)]

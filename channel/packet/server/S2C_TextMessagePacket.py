@@ -1,7 +1,6 @@
 import channel.packet.Packet as Packet
 from utils.BinarySequencer import Bin
 from channel.packet.PacketDimensions import S2C_TEXT_MESSAGE
-from utils.codecs.Base64 import base64ToInt
 
 
 class TextMessagePacket(Packet.Packet):
@@ -20,7 +19,7 @@ class TextMessagePacket(Packet.Packet):
     def build(self) -> Bin:
         packet_bin = Bin(S2C_TEXT_MESSAGE)
 
-        packet_bin.setAttribute( "DISPLAY_NAME" , base64ToInt(self.getDisplayName()) )
+        packet_bin.setAttribute( "DISPLAY_NAME" , self.getDisplayName().encode() )
         packet_bin.setAttribute( "MESSAGE"      , self.getMessage().encode('utf-8')  )
 
         return packet_bin

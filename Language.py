@@ -3,8 +3,7 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 
 english = {
-    "EXCEPTION": "Exception occurred: %s",
-    "TERMINAL_FAIL": "Failed to connect to terminal: %s",
+    "EMPTY_LINE": "",
 
     "CHANNEL_CREATE": "Successfully created channel\n -> Terminal: %terminal\n -> Channel ID: %channel_id"
                       "\n -> Secret Key: %secret_key (Do not lose or share this!)\n -> IP: %ip"
@@ -16,20 +15,23 @@ english = {
 
     "CHANNEL_INFO": "(%channel_id) [INFO] %message",
     "CHANNEL_TEXT_MESSAGE": "(%channel_id) %display_name: %message",
-
     "CHANNEL_CLIENT_DISCONNECT": "(%channel_id) You have been disconnected",
     "CHANNEL_CLIENT_DISCONNECT_REASON": "(%channel_id) Disconnect reason: %reason",
 
-    "MESSENGER_USAGE": "Expected Usage: %usage",
     "MESSENGER_EXCEPTION": "Exception Occurred: %exception",
-    "BANNED_USER": "Banned User: %user_name",
-    "FAILED_BANNED_USER": "Failed to ban user: %user_name",
+    "SERVICE_EXCEPTION": "Exception Occurred In Service: %exception",
+
     "MESSENGER_COMMAND": "%command: %arguments",
     "MESSENGER_START": "Starting Messenger Application",
     "MESSENGER_NO_CHANNEL": "Failed to find channel: %channel_id",
     "MESSENGER_JOIN_FAIL": "Failed to connect to channel: %channel_id | %channel_id",
     "MESSENGER_NO_ACTIVE_CHANNEL": "You must be connected to a channel to send a message",
-    "EMPTY_LINE": "",
+
+    "MESSENGER_ACTIVE_CLIENT": "Set active client to: %channel_id",
+    "MESSENGER_ACTIVE_SERVER": "Set active server to: %channel_id",
+
+    "INVALID_COMMAND": "You entered an invalid command: %command",
+    "MESSENGER_USAGE": "Expected Usage: %usage",
 }
 
 
@@ -53,6 +55,20 @@ class Language:
 
 language = Language("english")
 
+awaitingInput = False
+
+
+def awaitInput() -> str:
+    global awaitingInput
+    print(f" > ", flush=True, end='')  # Display the initial prompt  # Ensure the prompt is displayed immediately
+
+    awaitingInput = True
+    user_input = input()  # Get user input
+    awaitingInput = False
+
+    print("\033[F\033[K", flush=True, end='')  # Move cursor up and clear the line
+    return user_input
+
 
 def addPseudo(paramArgument, paramReplaced, paramReplacement):
     if paramArgument in language.getPseudo():
@@ -72,4 +88,10 @@ def info(paramLanguageAspect, **arguments):
     for key, value in arguments.items():
         message = message.replace(f"%{key}", value)
 
-    logging.info(message)
+    if awaitingInput:
+        print("\"\033[2K\033[1G", flush=True, end='')  # Clear the line and move cursor back to the start
+        logging.info(message)
+        print(f" > ", flush=True, end=' ')  # Re display what was on the line
+
+    else:
+        logging.info(message)
