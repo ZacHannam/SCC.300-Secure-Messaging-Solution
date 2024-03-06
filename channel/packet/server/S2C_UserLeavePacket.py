@@ -2,6 +2,7 @@ import channel.packet.Packet as Packet
 from utils.BinarySequencer import Bin
 from channel.packet.PacketDimensions import S2C_USER_LEAVE
 
+
 class UserLeavePacket(Packet.Packet):
     def __init__(self, paramDisplayName: str):
         super().__init__(Packet.PacketType.S2C_USER_LEAVE, True)

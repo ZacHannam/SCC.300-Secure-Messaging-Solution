@@ -1,5 +1,6 @@
 import re
 from typing import Any
+import sys
 
 from Properties import COMMAND_KEY
 from Language import info, awaitInput
@@ -298,6 +299,27 @@ class Messenger:
         else:
             info("MESSENGER_NO_CHANNEL", channel_id=paramChannelID)
 
+    def exit(self) -> None:
+        """
+        Safely exit the program
+        :return:
+        """
+
+        for server in self.getServers():  # Stop all servers
+            if not server.getStopEvent().is_set():
+                server.stopServer()
+
+        for client in self.getClients():  # Stop all clients
+            if not client.getStopEvent().is_set():
+                client.leaveServer()
+
+        sys.exit()  # Exit
+
+
+    """
+            Standard Methods
+    """
+
     def mainloop(self) -> None:
         """
         Main loop for Messenger
@@ -342,6 +364,7 @@ class ArgumentParser:
         self.__kwargs: dict[str, Any] | None    = None  # Key word arguments
 
         self.__expectedUsage: str | None        = None  # Usage of called command
+        self.__fullUsage: str | None            = None  # Full Usage of called command
 
         self.parse()  # Parse the string
 
@@ -397,6 +420,12 @@ class ArgumentParser:
         """
         return self.__expectedUsage
 
+    def getFullUsage(self) -> str | None:
+        """
+        Returns the full usage of the command
+        :return: str
+        """
+        return self.__fullUsage
 
     """
             Methods
@@ -412,11 +441,12 @@ class ArgumentParser:
             self.processArguments()  # Check if it was able to split arguments (will throw exceptions)
 
             # Possible AssertionError
-            assert self.__method is not None and self.__args is not None and self.__kwargs is not None
+            assert self.getExpectedUsage() is not None and self.getFullUsage() is not None\
+                   and self.getArgs() is not None and self.getKwargs() is not None
 
         except (TypeError, ValueError, IndexError, AssertionError):  # Catch Any other exception
-            if self.__expectedUsage is not None:  # The command used is known then print that usage
-                info("MESSENGER_USAGE", usage=self.__expectedUsage)
+            if self.getExpectedUsage() is not None:  # The command used is known then print that usage
+                info("MESSENGER_USAGE", usage=self.getFullUsage())
 
             else:  # Command is not known print the help method
                 info("INVALID_COMMAND", command=self.getArgument())
@@ -432,6 +462,9 @@ class ArgumentParser:
 
         except MessengerException as exception:  # Catch any exception that is thrown when method is run
             info("MESSENGER_EXCEPTION", exception=exception.message)
+
+        except TypeError:  # When they input invalid kwargs
+            info("MESSENGER_USAGE", usage=self.getFullUsage())
 
     def preformArgument(self) -> None:
         """
@@ -455,27 +488,28 @@ class ArgumentParser:
         # Get the command attributes from server commands | Throws KeyError
         # 1) Store the method and expected usage
         self.__method, self.__expectedUsage, arg_types = self.getServerCommands().get(key)
+        self.__fullUsage = f"{key} {self.getExpectedUsage()}"
 
         # 2) Find all positional arguments
         # Calculate the number of expected positional arguments
-        numberOfPositionalArguments = len(re.findall(r"<([^>]*)>", self.__expectedUsage))
+        numberOfPositionalArguments = len(re.findall(r"<([^>]*)>", self.getExpectedUsage()))
 
         # Store them as args
         self.__args = [arguments.split(" ")[index] for
                        index in range(numberOfPositionalArguments)]
 
         # Validate the number of positional arguments is matched
-        if sum([True for pArg in self.__args if pArg != '']) \
+        if sum([True for pArg in self.getArgs() if pArg != '']) \
                 != numberOfPositionalArguments:
             raise ValueError("Missing positional arguments")
 
         # 3) Establish the key word arguments
         # Use regex to find and convert kwargs to dict. Keeping a lowercase key
         self.__kwargs = dict([(g[0].lower(), g[1]) for g in
-                             [f[1:].split(" ") for f in re.findall(r"(-\w+\s+\w+)", arguments)]])
+                             [f[1:].split(" ") for f in re.findall(r"(\s-\w+\s+\w+)", arguments)]])
 
         # Cast all to the correct type (str -> int, bool, etc)
-        for key, value in self.__kwargs.items():
+        for key, value in self.getKwargs().items():
             if key in arg_types:
                 arg_type = arg_types.get(key)
                 self.__kwargs[key] = arg_type(value)
@@ -512,6 +546,7 @@ class ArgumentParser:
                                              {
                                                  "channel_id": str
                                              }),
+            COMMAND_KEY + "exit": (Messenger.exit, "", {}),
         }
 
 

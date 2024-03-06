@@ -91,3 +91,18 @@ class ClientException(MessengerException):
     FAILED_TO_CONNECT_TIMEOUT = MessengerException.Exception(True, "Failed to connect to server (Timed out)")
     FAILED_TO_LEAVE_SERVER = MessengerException.Exception(True, "Failed to leave server")
     FAILED_VALIDATE_TERMINAL = MessengerException.Exception(True, "Failed to validate terminal")
+
+
+class PacketException(MessengerException):
+    """
+            Exceptions
+    """
+
+    CONTENT_TOO_LARGE = MessengerException.Exception(False, "Packet content is too large")
+    PACKET_INCORRECT_DIMENSIONS = MessengerException.Exception(False, "Unexpected packet dimensions for packet type")
+    PACKET_EXPECTED_ENCRYPTION = MessengerException.Exception(False, "Expected encryption for packet and got none")
+    FAILED_TO_SEND_PACKET = MessengerException.Exception(False, "Failed to send packet (Broken Pipe)")
+    PACKET_COLLECT_SOCKET_CLOSED = MessengerException.Exception(True, "Packet collector socket closed")
+    PACKET_INCORRECT_SIZE = MessengerException.Exception(False, "Failed to decode packet due to its length")
+    UNEXPECTED_PACKET_TYPE = MessengerException.Exception(False, "Packet collector received unrecognised packet type")
+    PACKET_IDENTITY_INCORRECT = MessengerException.Exception(False, "A packet was wrongfully given sequence number")

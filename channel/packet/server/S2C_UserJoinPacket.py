@@ -1,6 +1,6 @@
 import channel.packet.Packet as Packet
 from utils.BinarySequencer import Bin
-from channel.packet.PacketDimensions import C2S_USER_DATA
+from channel.packet.PacketDimensions import S2C_USER_JOIN
 
 
 class UserJoinPacket(Packet.Packet):
@@ -13,7 +13,7 @@ class UserJoinPacket(Packet.Packet):
         return self.__displayName
 
     def build(self) -> Bin:
-        packet_bin = Bin(C2S_USER_DATA)
+        packet_bin = Bin(S2C_USER_JOIN)
 
         packet_bin.setAttribute("DISPLAY_NAME", self.getDisplayName().encode())
 

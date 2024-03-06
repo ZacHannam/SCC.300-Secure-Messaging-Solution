@@ -32,6 +32,7 @@ class IPType(Enum):
     Tunnel = 2
 
 
+RSA_KEY_SIZE                   = 4096                                   # Key size for RSA
 CHANNEL_USER_DISPLAY_NAME_MAX  = 16                                     # Number of characters in display name
 CHANNEL_ID_LENGTH              = (14, 20)                               # Channel ID length (generated)
 CHANNEL_SECRET_KEY_LENGTH      = (20, 28)                               # Channel Secret Key (generated)

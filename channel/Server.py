@@ -18,7 +18,7 @@ import base64
 from Properties import CHANNEL_ID_LENGTH, CHANNEL_SECRET_KEY_LENGTH, DEFAULT_PORT_SERVER, CHANNEL_BIN_DIMENSIONS, \
     CHANNEL_INFO_BIN_DIMENSIONS, CHANNEL_USER_DISPLAY_NAME_MAX, ALIVE_TIME, MAXIMUM_MESSAGE_SIZE, IPType, \
     TERMINAL_PROTOCOL, DEFAULT_BAN_REASON, ALIVE_TIMEOUT, LEGAL_DISPLAY_NAME_CHARACTERS, TERMINAL_VERSION,\
-    CHANNEL_BIN_INVALIDATE_DIMENSIONS
+    CHANNEL_BIN_INVALIDATE_DIMENSIONS, RSA_KEY_SIZE
 from channel.packet import Packet
 import services.Service as Service
 from utils.BinarySequencer import Bin, ArbitraryValue
@@ -236,6 +236,10 @@ class ServerConnectionService(Service.ServiceThread):
     """
 
     def registerUser(self) -> None:
+        """
+        Register as a user
+        :return: None
+        """
         assert self.getReadyEvent().is_set()
 
         self.getServerUserList().append(self)
@@ -244,7 +248,13 @@ class ServerConnectionService(Service.ServiceThread):
         self.sendToAllRecipients(userJoinPacket)
 
     def unregisterUser(self) -> None:
-        self.getServerUserList().remove(self)
+        """
+        Unregister as a user
+        :return: None
+        """
+        self.getStopEvent().set()  # Set the stop flag
+        if self in self.getServerUserList():  # Make sure the user is registered
+            self.getServerUserList().remove(self)
 
         userLeavePacket = UserLeavePacket(self.getDisplayName())
         self.sendToAllRecipients(userLeavePacket)
@@ -438,7 +448,7 @@ class ServerConnectionService(Service.ServiceThread):
                     self.getChannelID().encode('utf-8'):
                 raise ServerException(self.getStopEvent(), ServerException.CLIENT_FAILED_CHALLENGE)
 
-        except (cryptography.exceptions.NotYetFinalized, cryptography.exceptions.InvalidKey):
+        except (ValueError, cryptography.exceptions.NotYetFinalized, cryptography.exceptions.InvalidKey):
             raise ServerException(self.getStopEvent(), ServerException.CRYPTOGRAPHY_EXCEPTION)
 
         except (socket.timeout, socket.error, ConnectionResetError):  # If a socket exception happens
@@ -1177,7 +1187,7 @@ class Server:
         # Generate a private key
         private_key = rsa.generate_private_key(
             public_exponent=65537,
-            key_size=4096,  # The size of the key in bits
+            key_size=RSA_KEY_SIZE,  # The size of the key in bits
         )
 
         self.__privateKey = private_key

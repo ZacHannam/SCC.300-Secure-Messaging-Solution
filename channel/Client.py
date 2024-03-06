@@ -11,7 +11,8 @@ import socket
 from threading import Event, Lock
 import requests
 
-from Properties import CHANNEL_USER_DISPLAY_NAME_MAX, NAMES_LIST_FILE, TERMINAL_PROTOCOL, CHANNEL_BIN_DIMENSIONS
+from Properties import CHANNEL_USER_DISPLAY_NAME_MAX, NAMES_LIST_FILE, TERMINAL_PROTOCOL, CHANNEL_BIN_DIMENSIONS,\
+    RSA_KEY_SIZE
 from utils.BinarySequencer import Bin, getBinSize
 from Properties import CHANNEL_INFO_BIN_DIMENSIONS
 import services.Service as Service
@@ -541,8 +542,8 @@ class ClientConnectionService(Service.ServiceThread):
 
         finally:
             # 4) Close socket
-            self.getConnection().close()
             self.getStopEvent().set()
+            self.getConnection().close()
 
 
 class Client:
@@ -708,7 +709,7 @@ def generatePrivateKey() -> RSAPrivateKey:
     """
     private_key = rsa.generate_private_key(
         public_exponent=65537,
-        key_size=4096,  # The size of the key in bits
+        key_size=RSA_KEY_SIZE,  # The size of the key in bits
     )
 
     return private_key
