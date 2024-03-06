@@ -32,18 +32,28 @@ class IPType(Enum):
     Tunnel = 2
 
 
+"""
+        Client and Server
+"""
+
 RSA_KEY_SIZE                   = 4096                                   # Key size for RSA
+DEFAULT_PORT_SERVER            = 28961                                  # Default server port
 CHANNEL_USER_DISPLAY_NAME_MAX  = 16                                     # Number of characters in display name
 CHANNEL_ID_LENGTH              = (14, 20)                               # Channel ID length (generated)
 CHANNEL_SECRET_KEY_LENGTH      = (20, 28)                               # Channel Secret Key (generated)
-DEFAULT_PORT_SERVER            = 28961                                  # Default server port
-NAMES_LIST_FILE                = "names_list.txt"                       # List of names for generated names
-TERMINAL_VERSION               = "beta0.1"                              # Terminal and Client version
+NAMES_LIST_FILE                = "utils/names_list.txt"                 # List of names for generated names
 PACKET_MAX_SIZE                = 8192                                   # Packet size maximum (bits)
 ALIVE_TIME                     = 1                                      # Seconds between sending alive packets
 ALIVE_TIMEOUT                  = 3                                      # Alive timeout
 MAXIMUM_MESSAGE_SIZE           = 500                                    # Character limit for messages
 COMMAND_KEY                    = '/'                                    # Messenger command character
-TERMINAL_PROTOCOL              = ["http://", "https://"]                # Protocols that the terminal could use
 DEFAULT_BAN_REASON             = "You were banned from this channel!"   # Default ban reason
 LEGAL_DISPLAY_NAME_CHARACTERS  = string.ascii_letters + string.digits   # List of allowed username characters
+MESSENGER_DEFAULT_LANGUAGE     = "english"                              # Default language for messenger
+
+"""
+        Terminal
+"""
+
+TERMINAL_VERSION               = "beta0.1"                              # Terminal and Client version
+TERMINAL_PROTOCOL              = ["http://", "https://"]                # Protocols that the terminal could use

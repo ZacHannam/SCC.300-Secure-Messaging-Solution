@@ -4,27 +4,38 @@ from enum import Enum, auto
 import math
 from typing import Any
 
+from utils.MessengerExceptions import BinarySequencerException
+
 
 class ArbitraryValue(Enum):
+    """
+    Arbitrary values that can be used in place of int and bytes
+    """
     RANDOMISE = auto()  # Randomise when used in
-    DYNAMIC = auto()  # Makes a dynamic byte
+    DYNAMIC = auto()    # Makes a dynamic byte
 
 
 class Bin:
     def __init__(self, paramDimensions: list, population=0):
+        """
+        Binary sequencer that is used to convert data to a very simple and organised structure
+        :param paramDimensions:
+        :param population:
+        """
+        # Check that it has valid dimensions
         if not all([isinstance(dimension, tuple) and len(dimension) == 2 or len(dimension) == 3
                     for dimension in paramDimensions]):
-            raise ValueError("Dimensions do not fit [(a, b, ?), ...]")
+            raise BinarySequencerException(None, BinarySequencerException.INVALID_DIMENSIONS)
 
+        # If the population is in bytes convert to int
         if isinstance(population, bytes):
             population = int.from_bytes(population, byteorder="big")
 
+        # IF the population is not now in int then it has an invalid form
         if not isinstance(population, int):
-            raise ValueError("Population must be an integer or bytes")
+            raise BinarySequencerException(None, BinarySequencerException.INVALID_POPULATION_TYPE)
 
-        self.__dimensions = paramDimensions
-        self.__dimension_values = [0] * self.getNumberOfBins()
-
+        # Fill out the pre set values in the dimensions
         setValues = []
         for index, dimension in enumerate(paramDimensions):
             if len(dimension) == 2:
@@ -33,11 +44,15 @@ class Bin:
             setValues.append((dimension[0], dimension[2]))
             paramDimensions[index] = dimension[0], dimension[1]
 
+        # Set the dimensions now the pre-set values have been removed
         self.__dimensions = paramDimensions
+        self.__dimension_values: list = [0] * self.getNumberOfBins()  # Dimensions values
 
+        # Iterate through the dimensions and set values to set pre-set values
         for dimension, value in setValues:
             self.setAttribute(dimension, value)
 
+        # Populate the population value
         if population != 0:
             self.populate(population)
 
@@ -45,11 +60,19 @@ class Bin:
             Dimension Methods
     """
 
-    def __getDimensionValues(self) -> list:
+    def getDimensionValues(self) -> list:
+        """
+        Get the values for the dimensions
+        :return: list of dimension's values
+        """
         return self.__dimension_values
 
     @lru_cache
     def getDimensions(self) -> list[tuple]:
+        """
+        Get the dimensions for the bin
+        :return: list of dimensions
+        """
         return self.__dimensions
 
     """
@@ -57,13 +80,22 @@ class Bin:
     """
 
     @lru_cache
-    def getNumberOfBins(self):
+    def getNumberOfBins(self) -> int:
+        """
+        Get the total number of dimensions
+        :return: number of dimensions (int)
+        """
         return len(self.__dimensions)
 
-    def getBinSize(self):
+    def getBinSize(self) -> int:
+        """
+        Get the total number of bits used for the bin
+        :return: bin size bits (int)
+        """
         total = 0
         for attribute, attribute_size in self.getDimensions():
 
+            # If the attribute size is dynamic then add the total bits that would be necessary to fulfill it
             if attribute_size == ArbitraryValue.DYNAMIC:
                 attributeValue = self.getAttribute(attribute)
                 if attributeValue == 0:
@@ -80,13 +112,23 @@ class Bin:
 
         return total
 
-    def getBinSizeBytes(self):
+    def getBinSizeBytes(self) -> int:
+        """
+        Get the bin size in bytes
+        :return: convert bits to bytes (/8)
+        """
         return math.ceil(self.getBinSize() / 8)
 
-    def xor(self, paramInt: int):
-        if self.__getNumberOfDynamicBins():
-            raise RuntimeError("Cannot use xor when there is a dynamic bin")
+    def xor(self, paramInt: int) -> None:
+        """
+        Xor the bin with the paramInt and re populate
+        :param paramInt: what to xor the bin with
+        :return: None
+        """
+        if self.getNumberOfDynamicBins():
+            raise BinarySequencerException(None, BinarySequencerException.CANNOT_XOR_DYNAMIC_BIN)
 
+        # Re populate using the xor result value
         self.populate(self.getResult() ^ paramInt)
 
     """
@@ -94,30 +136,45 @@ class Bin:
     """
 
     @lru_cache
-    def __getBinaryLength(self, paramInt: int) -> int:
+    def getBinaryLength(self, paramInt: int) -> int:
+        """
+        Get the binary length of an int
+        :param paramInt: the int to get the length of
+        :return: value length in binary
+        """
         if paramInt == 0:
             return 0
 
         return int(math.ceil(math.log(paramInt, 2)))
 
     @lru_cache
-    def __getNumberOfDynamicBins(self) -> int:
+    def getNumberOfDynamicBins(self) -> int:
+        """
+        Get the number of dynamic bins
+        :return: Number of dynamic bins
+        """
         return sum([binSize == ArbitraryValue.DYNAMIC for _, binSize in self.getDimensions()])
 
-    def getResult(self):
+    def getResult(self) -> int:
+        """
+        Get the result of the bin (int) is the binary value
+        :return: the int version of the binary value
+        """
         total = 0
-        for (attribute, attribute_size), value in zip(self.getDimensions(), self.__getDimensionValues()):
+        for (attribute, attribute_size), value in zip(self.getDimensions(), self.getDimensionValues()):
+            # Check if the attribute is dynamic
             if attribute_size is not ArbitraryValue.DYNAMIC:
                 total = total << attribute_size
                 total += value
                 continue
 
+            # Push 17 across
             if value == 0:
-                total = 0x100 << self.__getBinaryLength(total) | total
+                total = 0x100 << self.getBinaryLength(total) | total
                 continue
 
-            valueSizeBits = self.__getBinaryLength(value)
-            logValueSizeBits = self.__getBinaryLength(valueSizeBits)
+            valueSizeBits = self.getBinaryLength(value)
+            logValueSizeBits = self.getBinaryLength(valueSizeBits)
 
             prefix = 0
             for t in range(int(math.ceil(logValueSizeBits / 7))):
@@ -126,21 +183,31 @@ class Bin:
 
             total = total << valueSizeBits
             total += value
-            total = prefix << self.__getBinaryLength(total) | total
+            total = prefix << self.getBinaryLength(total) | total
 
         return total
 
-    def getResultBytes(self, sizeBytes=None):
+    def getResultBytes(self, sizeBytes=None) -> bytes:
+        """
+        Get the result in bytes
+        :param sizeBytes: number of bytes to fix to
+        :return: size in bytes
+        """
         return intToBytes(self.getResult(), sizeBytes if sizeBytes else self.getBinSizeBytes())
 
-    def populate(self, paramPopulation):
+    def populate(self, paramPopulation: int) -> None:
+        """
+        Populate the bin and dimensions values
+        :param paramPopulation: the population
+        :return: None
+        """
 
-        numberOfDynamicBins = self.__getNumberOfDynamicBins()
+        numberOfDynamicBins = self.getNumberOfDynamicBins()
 
         total = paramPopulation
         totalDynamicBinSizes = []
         for t in range(numberOfDynamicBins):
-            bit_size = self.__getBinaryLength(total)
+            bit_size = self.getBinaryLength(total)
             dynamicBinSize = 0
             i = 0
             while ((bit_size - i * 8) - 1) >= 0 and (total >> (v := (bit_size - i * 8)) - 1):
@@ -149,32 +216,43 @@ class Bin:
                 total = total & (2 ** (v - 8) - 1)
                 i += 1
             totalDynamicBinSizes.append(dynamicBinSize)
-            total = total & ((2 ** self.__getBinaryLength(total)) - 1)
+            total = total & ((2 ** self.getBinaryLength(total)) - 1)
 
         for index, (attribute, attribute_size) in enumerate(reversed(self.getDimensions())):
             if attribute_size is ArbitraryValue.DYNAMIC:
                 attribute_size = totalDynamicBinSizes.pop(0)
 
-            self.__getDimensionValues()[self.getNumberOfBins() - index - 1] = total & ((2 ** attribute_size) - 1)
+            self.getDimensionValues()[self.getNumberOfBins() - index - 1] = total & ((2 ** attribute_size) - 1)
             total = total >> attribute_size
 
     """
             Attributes
     """
 
-    def getAttributeSize(self, paramAttribute) -> int | None:
+    def getAttributeSize(self, paramAttribute: Any) -> int | None:
+        """
+        Get the size of the attribute
+        :param paramAttribute: The attribute to get the size of
+        :return: None if the attribute doesnt exist or the int size of the attribute
+        """
         for attribute, attribute_size in self.getDimensions():
             if not attribute == paramAttribute:
                 continue
 
             if attribute_size == ArbitraryValue.DYNAMIC:
                 attributeValue = self.getAttribute(attribute)
-                return 0 if attributeValue == 0 else self.__getBinaryLength(attributeValue)
+                return 0 if attributeValue == 0 else self.getBinaryLength(attributeValue)
 
             return attribute_size
         return None
 
-    def setAttribute(self, paramAttribute: Any, paramValue: int | bytes | ArbitraryValue):
+    def setAttribute(self, paramAttribute: Any, paramValue: int | bytes | ArbitraryValue) -> None:
+        """
+        Set the attribute
+        :param paramAttribute: attribute to set
+        :param paramValue: the value to set it to
+        :return: None
+        """
 
         if isinstance(paramValue, bytes):
             paramValue = int.from_bytes(paramValue, byteorder="big")
@@ -185,34 +263,49 @@ class Bin:
 
             if paramValue is ArbitraryValue.RANDOMISE:
                 if attribute_size is ArbitraryValue.DYNAMIC:
-                    raise RuntimeError("Cannot apply a randomised value to a dynamic bin")
+                    raise BinarySequencerException(None, BinarySequencerException.CANNOT_RANDOMISE_DYNAMIC_BIN)
 
-                self.__getDimensionValues()[index] = random.getrandbits(attribute_size)
+                self.getDimensionValues()[index] = random.getrandbits(attribute_size)
                 continue
 
             if (attribute_size != ArbitraryValue.DYNAMIC) and paramValue >> attribute_size > 0:
-                raise OverflowError("Attribute value does not fit in container")
+                raise BinarySequencerException(None, BinarySequencerException.ATTRIBUTE_TOO_LARGE)
 
-            self.__getDimensionValues()[index] = paramValue
+            self.getDimensionValues()[index] = paramValue
 
-    def getAttribute(self, *paramAttribute: Any) -> int | tuple:
+    def getAttribute(self, *paramAttribute: Any) -> int | tuple[int]:
+        """
+        Get the result for the attributes
+        :param paramAttribute: list of attributes
+        :return: attribute values
+        """
 
         values = [0] * len(paramAttribute)
         for index, (attribute, attribute_size) in enumerate(self.getDimensions()):
             if attribute not in paramAttribute:
                 continue
 
-            values[paramAttribute.index(attribute)] = self.__getDimensionValues()[index]
+            values[paramAttribute.index(attribute)] = self.getDimensionValues()[index]
 
         return values[0] if len(values) == 1 else tuple(values)
 
-    def getAttributeBytes(self, *paramAttribute: Any) -> bytes | tuple:
+    def getAttributeBytes(self, *paramAttribute: Any) -> bytes | tuple[bytes]:
+        """
+        Get the attribute value in bytes
+        :param paramAttribute: attributes to get
+        :return: attribute value in bytes
+        """
         results = [intToBytes(self.getAttribute(dimension), int(math.ceil(self.getAttributeSize(dimension) / 8)))
                    for dimension in paramAttribute]
 
         return results[0] if len(results) == 1 else tuple(results)
 
-    def containsAttribute(self, paramDimension: str):
+    def containsAttribute(self, paramDimension: str) -> bool:
+        """
+        Check if bin contains attribute
+        :param paramDimension: The attribute
+        :return: bool if it contains
+        """
         attribute_size = self.getAttributeSize(paramDimension)
         return attribute_size is not None
 
@@ -222,17 +315,21 @@ class Bin:
 
     def __str__(self) -> str:
         return str(dict(
-            [(attribute, value) for (attribute, _), value in zip(self.getDimensions(), self.__getDimensionValues())]))
+            [(attribute, value) for (attribute, _), value in zip(self.getDimensions(), self.getDimensionValues())]))
 
     def __len__(self) -> int:
         return self.getBinSize()
 
 
 def getBinSize(paramDimensions: list) -> int:
+    """
+    Get bin size from dimensions
+    :param paramDimensions: dimensions to add
+    :return: bin size (int)
+    """
     if not all([isinstance(dimension, tuple) and len(dimension) == 2 or len(dimension) == 3
                 for dimension in paramDimensions]):
-        raise ValueError("Dimensions do not fit [(a, b, ?), ...]")
-
+        raise BinarySequencerException(None, BinarySequencerException.INVALID_DIMENSIONS)
 
     for index, dimension in enumerate(paramDimensions):
         if len(dimension) == 2:
@@ -243,10 +340,21 @@ def getBinSize(paramDimensions: list) -> int:
 
 
 def getBinSizeBytes(paramDimensions: list) -> int:
+    """
+    Get the bin size in
+    :param paramDimensions:
+    :return:
+    """
     return int(math.ceil(getBinSize(paramDimensions) / 8))
 
 
-def getBinFromSequence(paramSequence: list, paramBitsPerCharacter) -> Bin:
+def getBinFromSequence(paramSequence: list, paramBitsPerCharacter: int) -> Bin:
+    """
+    Convert a sequence to a bin
+    :param paramSequence: The sequence to be put into a bin
+    :param paramBitsPerCharacter: Number of characters per bit
+    :return:
+    """
     created_bin = Bin([(str(n), paramBitsPerCharacter) for n in range(len(paramSequence))])
     for index, item in enumerate(paramSequence):
         created_bin.setAttribute(str(index), item)
@@ -254,7 +362,13 @@ def getBinFromSequence(paramSequence: list, paramBitsPerCharacter) -> Bin:
     return created_bin
 
 
-def dropAttribute(paramBin: Bin, *paramDimension: str):
+def dropAttribute(paramBin: Bin, *paramDimension: str) -> Bin:
+    """
+    Remove an attribute from a bin
+    :param paramBin: the bin to remove attribute from
+    :param paramDimension: the dimensions of the bin
+    :return: New bin
+    """
     new_dimensions = []
 
     for dimensionName, dimensionSize in paramBin.getDimensions():
@@ -270,16 +384,34 @@ def dropAttribute(paramBin: Bin, *paramDimension: str):
 
 
 def getAttributeSize(paramDimensions: list[tuple], *paramAttribute: Any) -> tuple | int:
+    """
+    Get the size of an attribute
+    :param paramDimensions: The dimensions of bin
+    :param paramAttribute: The attribute
+    :return:
+    """
     results = [dict(paramDimensions).get(attribute, None) for attribute in paramAttribute]
     return results[0] if len(results) == 1 else tuple(results)
 
 
 def getAttributeSizeBytes(paramDimensions: list[tuple], *paramAttribute: Any) -> tuple | int:
+    """
+    Get the attribute size in bytes not bits
+    :param paramDimensions: The dimensions of the bin
+    :param paramAttribute: The attribute
+    :return:
+    """
     results = getAttributeSize(paramDimensions, paramAttribute)
     return results[0] if len(results) == 1 else tuple(results)
 
 
 def intToBytes(paramInt: int, paramSizeBytes: int) -> bytes:
+    """
+    Convert int to bytes
+    :param paramInt: int to convert
+    :param paramSizeBytes: number of bytes
+    :return: bytes
+    """
     characters = []
     for index in range(paramSizeBytes):
 

@@ -1,10 +1,9 @@
 from threading import Thread
 from enum import Enum, auto
 from abc import ABC, abstractmethod
-import traceback
 
-from Language import info
-from channel.MessengerExceptions import MessengerException
+from utils.Language import info
+from utils.MessengerExceptions import MessengerException
 
 
 class ServiceType(Enum):
@@ -29,16 +28,32 @@ class ServiceType(Enum):
 
 class ServiceThread(Thread, ABC):
     def __init__(self, paramThreadType: ServiceType, target=None, name=None, args=(), kwargs=None):
+        """
+        Abstract class implementation for Thread
+        :param paramThreadType: The thread type used
+        :param target: Parent Thread target
+        :param name: Parent Thread name
+        :param args: Parent thread args
+        :param kwargs: Parent thread kwargs
+        """
         super(ServiceThread, self).__init__(target=target, name=name)
-        self.args, self.kwargs = args, kwargs
+        self.args, self.kwargs = args, kwargs  # Set args and kwargs in Thread parent
 
-        self.__threadType = paramThreadType
+        self.__threadType = paramThreadType  # Thread type the service is using
 
     def getThreadType(self) -> ServiceType:
+        """
+        Get the thread type the service is using
+        :return: Thread type
+        """
         return self.__threadType
 
     @abstractmethod
     def run_safe(self):
+        """
+        Run safely using exception catching
+        :return:
+        """
         raise NotImplementedError("run_safe method was not implemented!")
 
     def run(self) -> None:

@@ -10,11 +10,11 @@ from cryptography.exceptions import InvalidKey, InvalidSignature
 from threading import Lock, Event
 import cryptography.exceptions
 
-from channel.packet.PacketDimensions import *
-import services.Service as Service
+from channel.PacketDimensions import *
+import channel.Service as Service
 from utils.BinarySequencer import Bin, getAttributeSize, getBinSize, getBinSizeBytes
 from Properties import PACKET_MAX_SIZE, RSA_KEY_SIZE
-from channel.MessengerExceptions import PacketException
+from utils.MessengerExceptions import PacketException
 
 
 class PacketType(Enum):
@@ -99,6 +99,10 @@ class Packet(ABC):
 
     @abstractmethod
     def build(self) -> Bin:
+        """
+        Abstract method to build the packet bin
+        :return:
+        """
         raise NotImplementedError("build method not implemented")
 
 

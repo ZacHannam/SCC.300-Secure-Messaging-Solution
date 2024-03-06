@@ -106,3 +106,26 @@ class PacketException(MessengerException):
     PACKET_INCORRECT_SIZE = MessengerException.Exception(False, "Failed to decode packet due to its length")
     UNEXPECTED_PACKET_TYPE = MessengerException.Exception(False, "Packet collector received unrecognised packet type")
     PACKET_IDENTITY_INCORRECT = MessengerException.Exception(False, "A packet was wrongfully given sequence number")
+
+
+class Base85Exception(MessengerException):
+    """
+            Exceptions
+    """
+    INVALID_NUMBER_OF_CHARACTERS_ENCODE = MessengerException.Exception(False, "Number of characters must be a "
+                                                                              "multiple of 5")
+    INVALID_NUMBER_OF_CHARACTERS_DECODE = MessengerException.Exception(False, "Number of characters must be a "
+                                                                              "multiple of 4")
+    INVALID_CHARACTER = MessengerException.Exception(False, "Character is not in the base85 alphabet")
+
+
+class BinarySequencerException(MessengerException):
+    """
+            Exceptions
+    """
+    INVALID_DIMENSIONS = MessengerException.Exception(False, "Dimensions do not fit [(a, b, ?), ...]")
+    INVALID_POPULATION_TYPE = MessengerException.Exception(False, "Population must be an integer or bytes")
+    CANNOT_XOR_DYNAMIC_BIN = MessengerException.Exception(False, "Cannot use xor when there is a dynamic bin")
+    CANNOT_RANDOMISE_DYNAMIC_BIN = MessengerException.Exception(False, "Cannot apply a randomised value to a dynamic "
+                                                                       "bin")
+    ATTRIBUTE_TOO_LARGE = MessengerException.Exception(False, "Attribute value does not fit in container")

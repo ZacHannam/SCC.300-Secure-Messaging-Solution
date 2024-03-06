@@ -6,7 +6,7 @@ import hmac
 import base64
 
 from Properties import CHANNEL_BIN_DIMENSIONS, CHANNEL_INFO_BIN_DIMENSIONS, CHANNEL_BIN_INVALIDATE_DIMENSIONS
-from utils.codecs.Base85 import intToBase85
+from utils.Base85 import intToBase85
 from utils.BinarySequencer import getBinSizeBytes, Bin
 
 TERMINAL_VERSION = "beta0.1"  # Do not change

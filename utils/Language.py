@@ -1,6 +1,9 @@
 import logging
 
+from Properties import MESSENGER_DEFAULT_LANGUAGE
+
 logging.basicConfig(level=logging.INFO, format='%(message)s')
+awaitingInput = False  # Awaiting input for concurrency
 
 english = {
     "EMPTY_LINE": "",
@@ -30,35 +33,50 @@ english = {
     "MESSENGER_ACTIVE_CLIENT": "Set active client to: %channel_id",
     "MESSENGER_ACTIVE_SERVER": "Set active server to: %channel_id",
 
-    "INVALID_COMMAND": "You entered an invalid command: %command",
+    "MESSENGER_INVALID_COMMAND": "You entered an invalid command: %command",
     "MESSENGER_USAGE": "Expected Usage: %usage",
 }
 
 
 class Language:
     def __init__(self, paramLanguage: str):
+        """
+        Language object
+        :param paramLanguage:
+        """
         match paramLanguage:
-            case "english":
+            case "english":  # Currently only have english language
                 self.language = english
             case _:
                 self.language = english
 
-        self.__pseudo = {}
+        self.__pseudo = {}  # Pseudo for language to replace
 
     def getPseudo(self) -> dict:
+        """
+        Get the pseudo values
+        :return: dict of pseudo values
+        """
         return self.__pseudo
 
-    def get(self, paramLanguageAspect):
+    def get(self, paramLanguageAspect: str):
+        """
+        Returns the language aspect result
+        :param paramLanguageAspect: language aspect (str)
+        :return: text to be displayed (str)
+        """
         return self.language.get(paramLanguageAspect,
                                  english.get(paramLanguageAspect, f"Invalid Language: {paramLanguageAspect}"))
 
 
-language = Language("english")
-
-awaitingInput = False
+language = Language(MESSENGER_DEFAULT_LANGUAGE)  # The default language
 
 
 def awaitInput() -> str:
+    """
+    Await input from the messenger
+    :return:
+    """
     global awaitingInput
     print(f" > ", flush=True, end='')  # Display the initial prompt  # Ensure the prompt is displayed immediately
 
@@ -70,24 +88,40 @@ def awaitInput() -> str:
     return user_input
 
 
-def addPseudo(paramArgument, paramReplaced, paramReplacement):
+def addPseudo(paramArgument, paramReplaced, paramReplacement) -> None:
+    """
+    Add pseudo replacement
+    :param paramArgument: Argument to be replaced
+    :param paramReplaced: What should be replaced
+    :param paramReplacement: Replacement text
+    :return: None
+    """
     if paramArgument in language.getPseudo():
         language.getPseudo()[paramArgument].add(paramReplaced, paramReplacement)
     else:
         language.getPseudo()[paramArgument] = {paramReplaced: paramReplacement}
 
 
-def info(paramLanguageAspect, **arguments):
+def info(paramLanguageAspect, **arguments) -> None:
+    """
+    Output info to the messenger
+    :param paramLanguageAspect: The language aspect to be output
+    :param arguments: key word arguments for language aspect
+    :return: None
+    """
 
+    # Find and replace all pseudo
     for key, value in arguments.items():
         if key in language.getPseudo():
             if value in language.getPseudo()[key]:
                 arguments[key] = language.getPseudo()[key][value]
 
+    # Get the message from the language aspect
     message = language.get(paramLanguageAspect)
     for key, value in arguments.items():
         message = message.replace(f"%{key}", value)
 
+    # Output the message using logging class
     if awaitingInput:
         print("\"\033[2K\033[1G", flush=True, end='')  # Clear the line and move cursor back to the start
         logging.info(message)

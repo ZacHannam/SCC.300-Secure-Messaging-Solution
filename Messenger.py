@@ -3,10 +3,10 @@ from typing import Any
 import sys
 
 from Properties import COMMAND_KEY
-from Language import info, awaitInput
-from channel.Client import Client, getClientFromTerminalScan
-from channel.Server import Server
-from channel.MessengerExceptions import MessengerException
+from utils.Language import info, awaitInput
+from channel.client.Client import Client, getClientFromTerminalScan
+from channel.server.Server import Server
+from utils.MessengerExceptions import MessengerException
 
 
 class Messenger:
@@ -449,7 +449,7 @@ class ArgumentParser:
                 info("MESSENGER_USAGE", usage=self.getFullUsage())
 
             else:  # Command is not known print the help method
-                info("INVALID_COMMAND", command=self.getArgument())
+                info("MESSENGER_INVALID_COMMAND", command=self.getArgument())
                 info("EMPTY_LINE")
                 for command, (_, arguments, _) in ArgumentParser.getServerCommands().items():
                     info("MESSENGER_COMMAND", command=command, arguments=arguments)
