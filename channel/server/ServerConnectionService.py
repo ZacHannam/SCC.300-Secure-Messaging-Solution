@@ -2,7 +2,9 @@ import hashlib
 import socket
 import string
 import time
+import types
 from threading import Event
+from typing import Any, Optional
 
 import cryptography.exceptions
 from cryptography.hazmat.primitives import serialization, hashes
@@ -38,31 +40,31 @@ class ServerConnectionService(Service.ServiceThread):
         super().__init__(Service.ServiceType.SERVER_CONNECTION)
 
         # General Server / User information
-        self.__connection: socket.socket = paramConnection              # Socket connecting to client
-        self.__clientAddress: tuple = paramClientAddress                # Client address (ip, port)
-        self.__channelID: str = paramChannelID                          # Channel ID
+        self.__connection: socket.socket = paramConnection  # Socket connecting to client
+        self.__clientAddress: tuple = paramClientAddress  # Client address (ip, port)
+        self.__channelID: str = paramChannelID  # Channel ID
         self.__serverPrivateKey: RSAPrivateKey = paramServerPrivateKey  # Server Private Key
-        self.__lastAliveTime: int = int(time.time())                    # Last time client was alive
+        self.__lastAliveTime: int = int(time.time())  # Last time client was alive
         self.__serverSecret: str = paramServerSecret
 
         # Obtained client information
-        self.__displayName: str | None = None                  # Client display name
-        self.__clientPublicKey: RSAPublicKey | None = None     # Client public key
+        self.__displayName: str | None = None  # Client display name
+        self.__clientPublicKey: RSAPublicKey | None = None  # Client public key
+        self.__adminPermission: bool = False  # If the client is an admin
+        self.__receiveFiles: bool = False  # If the client receives files
 
         # Service flags
-        self.__stop = Event()    # Stop event
-        self.__ready = Event()   # Ready Event
+        self.__stop = Event()  # Stop event
+        self.__ready = Event()  # Ready Event
 
         # Packet collector
         self.__packetCollector = PacketCollector(self.getConnection(), self.getServerPrivateKey(), self.getStopEvent())
         self.__packetCollector.start()
 
         # For server Authentication
-        self.__serverMaxUsers: int = paramServerMaxUsers                            # Max number of users on the server
+        self.__serverMaxUsers: int = paramServerMaxUsers  # Max number of users on the server
         self.__serverUserList: list[ServerConnectionService] = paramServerUserList  # List of of users on the server
-        self.__serverBanList: list[str] = paramServerBanList                        # List of banned users on the server
-        self.__adminPermission: bool = False
-
+        self.__serverBanList: list[str] = paramServerBanList  # List of banned users on the server
 
     """
             Getter Methods
@@ -110,6 +112,21 @@ class ServerConnectionService(Service.ServiceThread):
         :return: List of ips banned on the server
         """
         return self.__serverBanList
+
+    def getReceiveFiles(self) -> bool:
+        """
+        Check if the client receives files
+        :return:
+        """
+        return self.__receiveFiles
+
+    def setReceivesFiles(self, paramReceivesFiles: bool) -> None:
+        """
+        Set if the user receives files
+        :param paramReceivesFiles: if the user receives files
+        :return: None
+        """
+        self.__receiveFiles = paramReceivesFiles
 
     def getAdminPermission(self) -> bool:
         """
@@ -184,7 +201,6 @@ class ServerConnectionService(Service.ServiceThread):
         """
         self.getStopEvent().set()
 
-
     """
             User
     """
@@ -199,7 +215,7 @@ class ServerConnectionService(Service.ServiceThread):
         self.getServerUserList().append(self)
 
         userJoinPacket = UserJoinPacket(self.getDisplayName(True))
-        self.sendToAllRecipients(userJoinPacket, True)
+        self.sendToAllRecipients(userJoinPacket)
 
     def unregisterUser(self) -> None:
         """
@@ -211,7 +227,7 @@ class ServerConnectionService(Service.ServiceThread):
             self.getServerUserList().remove(self)
 
             userLeavePacket = UserLeavePacket(self.getDisplayName(True))
-            self.sendToAllRecipients(userLeavePacket, True)
+            self.sendToAllRecipients(userLeavePacket)
 
     def setDisplayName(self, paramDisplayName: str) -> None:
         """
@@ -225,7 +241,7 @@ class ServerConnectionService(Service.ServiceThread):
         Get the display name of the client
         :return: User display name (str)
         """
-        return f"{self.__displayName}: Admin" if (self.getAdminPermission() and paramIncludeLevel)\
+        return f"{self.__displayName}: Admin" if (self.getAdminPermission() and paramIncludeLevel) \
             else self.__displayName
 
     def getLastAliveTime(self) -> int:
@@ -241,7 +257,6 @@ class ServerConnectionService(Service.ServiceThread):
         :return: None
         """
         self.__lastAliveTime = int(time.time())
-
 
     """
             Ban & Kick
@@ -260,12 +275,9 @@ class ServerConnectionService(Service.ServiceThread):
         # Stop client connection
         self.stop()
 
-
     def banUser(self, paramReason: str | None):
         self.kickUser(paramReason)
         self.getServerBanList().append(self.getClientAddress()[0])
-
-
 
     """
             Packet Methods
@@ -288,21 +300,56 @@ class ServerConnectionService(Service.ServiceThread):
             # the server ready to send them
             sendPacket(paramPacket, (self.getConnection(), self.getClientPublicKey()))
 
-    def sendToAllRecipients(self, paramPacket: Packet, paramIncludeSelf: bool) -> None:
+    def sendToAllRecipients(self, paramPacket: Packet, ignore:
+                            tuple[Any, types.FunctionType | type, Optional[tuple[Any]], Optional[dict[str, Any]]] |
+                            list[tuple[Any, types.FunctionType | type, Optional[tuple[Any]], Optional[dict[str, Any]]]]
+                            | None = None
+                            ) -> None:
         """
-        Send a packet to everyone on the server
-        :param paramIncludeSelf: Should this packet be sent to self
-        :param paramPacket: Packet to send
-        :return:
+        :param paramPacket: Packet to be sent
+        :param ignore: Ignore where recipient ClientConnectionService.CLASS_METHOD(...) is equal to result
+        :return: None
         """
-        connections = []
 
-        for serverConnectionService in self.getServerUserList():
-            if serverConnectionService == self and not paramIncludeSelf:
-                continue
-            connections.append((serverConnectionService.getConnection(), serverConnectionService.getClientPublicKey()))
+        if ignore is None:
+            # Send packet to all recipients since there is no ignoring
+            # scs = ServerConnectionService
+            sendPacket(paramPacket, [(scs.getConnection(), scs.getClientPublicKey())
+                                     for scs in self.getServerUserList()])
+            return
 
-        sendPacket(paramPacket, connections)
+        # If some server connection services need to be ignore
+        scs_list = self.getServerUserList()[:]  # Copy server user list
+
+        if isinstance(ignore, tuple):
+            ignore = [ignore]
+
+        for ignoreExpression in ignore:
+            result: Any = ignoreExpression[0]
+
+            method_or_obj: types.FunctionType | type = ignoreExpression[1]
+
+            args: tuple[Any] = ignoreExpression[2] if len(ignoreExpression) >= 3 and ignoreExpression[2]\
+                is not None else ()
+            kwargs: dict[str, Any] = ignoreExpression[3] if len(ignoreExpression) >= 4 and ignoreExpression[3] \
+                is not None else {}
+
+            # Choose connections to be used
+            for serverConnectionService in scs_list[:]:  # Copy list again to stop concurrent modification
+
+                if isinstance(method_or_obj, types.FunctionType):
+                    if method_or_obj(serverConnectionService, *args, **kwargs) == result:
+                        scs_list.remove(serverConnectionService)
+                    continue
+
+                if isinstance(method_or_obj, type):
+                    if serverConnectionService == result:
+                        scs_list.remove(serverConnectionService)
+                    continue
+
+        # Send the packet
+        sendPacket(paramPacket, [(scs.getConnection(), scs.getClientPublicKey())
+                                 for scs in scs_list])
 
     def getConnection(self) -> socket.socket:
         """
@@ -379,7 +426,7 @@ class ServerConnectionService(Service.ServiceThread):
 
             """ 3) Receive The Return Packet From The Client """
             # 3.1) Collect return packet
-            authenticate_returnPacket = self.getPacketCollector()\
+            authenticate_returnPacket = self.getPacketCollector() \
                 .awaitPacket(packet_type=PacketType.C2S_AUTHENTICATE_RETURN)
 
             if self.getStopEvent().is_set():
@@ -406,11 +453,8 @@ class ServerConnectionService(Service.ServiceThread):
             )
 
             # 3.5) Check if client has successfully completed the challenge
-            if decryptedClientChallenge != serverAuthenticatePacket.getChallenge() +\
+            if decryptedClientChallenge != serverAuthenticatePacket.getChallenge() + \
                     self.getChannelID().encode('utf-8'):
-                print("Server 1)", decryptedClientChallenge, "2)",
-                      serverAuthenticatePacket.getChallenge() + self.getChannelID().encode('utf-8'))
-
                 raise ServerException(self.getStopEvent(), ServerException.CLIENT_FAILED_CHALLENGE)
 
         except (ValueError, cryptography.exceptions.NotYetFinalized, cryptography.exceptions.InvalidKey):
@@ -454,6 +498,11 @@ class ServerConnectionService(Service.ServiceThread):
                 serverSecret = encodedServerSecret.decode('utf-8')
                 if serverSecret == self.getServerSecret():
                     self.setAdminPermission(True)
+
+            # 5) Check if the user receives files
+            receiveFiles = userData_packetBin.getAttribute("RECEIVE_FILES")
+            self.setReceivesFiles(bool(receiveFiles))
+
 
         except (socket.timeout, socket.error, ConnectionResetError):  # If a socket exception happens
             raise ServerException(self.getStopEvent(), ServerException.SOCKET_EXCEPTION)
@@ -507,7 +556,7 @@ class ServerConnectionService(Service.ServiceThread):
         """
         while not self.__stop.is_set():
             try:
-                packet =  self.getPacketCollector().awaitPacket()  # Await a packet from client
+                packet = self.getPacketCollector().awaitPacket()  # Await a packet from client
                 if self.getStopEvent().is_set():
                     return
 
@@ -534,7 +583,8 @@ class ServerConnectionService(Service.ServiceThread):
                             continue
 
                         textMessagePacket = TextMessagePacket(self.getDisplayName(True), message)
-                        self.sendToAllRecipients(textMessagePacket, True)
+                        self.sendToAllRecipients(textMessagePacket)
+
                     case PacketType.C2S_FILE_SEND:
 
                         encodedFileName = packetBin.getAttributeBytes("FILE_NAME")
@@ -561,9 +611,11 @@ class ServerConnectionService(Service.ServiceThread):
                         if serverReceivedPacket.getError() is not None:
                             continue
 
-                        # Send file to everyone else
+                        # Send file to everyone else who doesnt have receive files turned off
                         fileSendPacket = FileSendPacket(fileName, file_bytes, self.getDisplayName(True))
-                        self.sendToAllRecipients(fileSendPacket, False)
+                        self.sendToAllRecipients(fileSendPacket,
+                                                 ignore=[(False, ServerConnectionService.getReceiveFiles, None, None),
+                                                         (self,  ServerConnectionService                , None, None)])
 
                     case _:
                         continue  # Received unrecognised packet
@@ -588,7 +640,6 @@ class ServerConnectionService(Service.ServiceThread):
             self.getUserData()
             if self.getDisplayName(False) is None:
                 raise ServerException(self.getStopEvent(), ServerException.FAILED_TO_GET_CLIENT_CREDENTIALS)
-
 
             # 4) Check if user passes checks i.e bans, and number of people online
             if not self.getAdminPermission():

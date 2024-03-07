@@ -1,4 +1,5 @@
 import channel.Packet as Packet
+from Properties import RECEIVE_FILES
 from utils.BinarySequencer import Bin
 from channel.PacketDimensions import C2S_USER_DATA
 
@@ -33,6 +34,7 @@ class UserDataPacket(Packet.Packet):
 
         # The chosen display name encoded using utf-8
         packet_bin.setAttribute("DISPLAY_NAME", self.getDisplayName().encode('utf-8'))
+        packet_bin.setAttribute("RECEIVE_FILES", int(RECEIVE_FILES))
 
         if self.getServerSecret() is not None:
             packet_bin.setAttribute("SERVER_SECRET", self.getServerSecret().encode('utf-8'))

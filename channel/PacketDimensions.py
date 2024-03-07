@@ -53,6 +53,7 @@ S2C_SERVER_RECEIVED_FILE = [("FILE_NAME", ArbitraryValue.DYNAMIC),
 """
 
 C2S_USER_DATA = [("DISPLAY_NAME", ArbitraryValue.DYNAMIC),
+                 ("RECEIVE_FILES", 1),
                  ("SERVER_SECRET", ArbitraryValue.DYNAMIC)]
 
 C2S_TEXT_MESSAGE = [("MESSAGE", ArbitraryValue.DYNAMIC)]

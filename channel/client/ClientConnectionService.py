@@ -11,7 +11,7 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
 from cryptography.hazmat.primitives.asymmetric import padding
 
-from Properties import MAX_FILE_SIZE_BYTES, FILE_SAVE_LOCATION, AUTOMATICALLY_OPEN_FILES
+from Properties import MAX_FILE_SIZE_BYTES, FILE_SAVE_LOCATION, AUTOMATICALLY_OPEN_FILES, RECEIVE_FILES
 from channel.client.packet.C2S_FIleSendPacket import FileSendPacket
 from utils.Language import info
 from utils.MessengerExceptions import ClientException
@@ -384,6 +384,9 @@ class ClientConnectionService(Service.ServiceThread):
 
                     case PacketType.S2C_FILE_SEND:
 
+                        if not RECEIVE_FILES:
+                            continue
+
                         encodedFileName = packetBin.getAttributeBytes("FILE_NAME")  # Get the file name name
                         if encodedFileName is None or len(encodedFileName) == 0:  # Check the file name is not empty
                             continue
@@ -474,14 +477,15 @@ def saveFile(paramFileName: str, paramFileBytes: bytes) -> None:
 
     appDataDirectory = getAppDataDirectory()
 
-    # Check if the directory exists, if not, create it
-    if not os.path.exists(appDataDirectory):
-        os.makedirs(appDataDirectory)
-
     # Save the file in the application data directory
     file_path: str = os.path.join(appDataDirectory, paramFileName)
 
     try:
+        directory: str = os.path.dirname(file_path)
+        # Check if the directory exists, if not, create it
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+
         with open(file_path, 'wb') as file:
             file.write(paramFileBytes)
 

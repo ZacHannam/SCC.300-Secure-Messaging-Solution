@@ -5,8 +5,8 @@ import os
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
 
-from Properties import CHANNEL_USER_DISPLAY_NAME_MAX, NAMES_LIST_FILE, TERMINAL_PROTOCOL, RSA_KEY_SIZE,\
-    MAX_FILE_SIZE_BYTES
+from Properties import CHANNEL_USER_DISPLAY_NAME_MAX, NAMES_LIST_FILE, TERMINAL_PROTOCOL, RSA_KEY_SIZE, \
+    MAX_FILE_SIZE_BYTES, SEND_HIDDEN_FILES
 from channel.client.ClientConnectionService import ClientConnectionService
 from channel.client.TerminalScanService import TerminalScanService
 from utils.BinarySequencer import Bin, getBinSize
@@ -339,7 +339,8 @@ def recursiveFileFinder(paramFolderPath: str) -> list[str]:
     for file in os.listdir(paramFolderPath):
         filePath = os.path.join(paramFolderPath, file)
         if os.path.isdir(filePath):
-            files = files + recursiveFileFinder(filePath)
+            files += recursiveFileFinder(filePath)
         else:
-            files.append(filePath)
+            if not os.path.basename(file).startswith(".") or SEND_HIDDEN_FILES:  # Hidden files might not be sent
+                files.append(filePath)
     return files

@@ -52,7 +52,9 @@ LEGAL_DISPLAY_NAME_CHARACTERS  = string.ascii_letters + string.digits   # List o
 MESSENGER_DEFAULT_LANGUAGE     = "english"                              # Default language for messenger
 MAX_FILE_SIZE_BYTES            = 1_000_000_000                          # Maximum file size
 FILE_SAVE_LOCATION             = "Messenger/saved-files"                # Where files should be saved on the client
-AUTOMATICALLY_OPEN_FILES       = True                                   # Automatically opened saved files
+RECEIVE_FILES                  = True                                   # If the client is receiving files
+AUTOMATICALLY_OPEN_FILES       = False                                  # Automatically opened saved files
+SEND_HIDDEN_FILES              = False                                  # Send hidden files (start with .)
 
 """
         Terminal
