@@ -11,7 +11,7 @@ from channel import Service
 class ServerHostService(Service.ServiceThread):
     def __init__(self, paramServerPort: int, paramStopEvent: Event,
                  paramChannelID: str, paramServerPrivateKey: RSAPrivateKey, paramServerMaxUsers: int,
-                 paramServerUserList: list, paramServerBanList: list):
+                 paramServerUserList: list, paramServerBanList: list, paramServerSecret: str):
         super().__init__(Service.ServiceType.SERVER_HOST)
 
         self.__serverPort = paramServerPort  # Port the server is running on
@@ -19,6 +19,7 @@ class ServerHostService(Service.ServiceThread):
 
         self.__channelID: str = paramChannelID  # Channel ID
         self.__serverPrivateKey: RSAPrivateKey = paramServerPrivateKey  # Server Private Key
+        self.__serverSecret: str = paramServerSecret
 
         # For server Authentication
         self.__serverMaxUsers: int = paramServerMaxUsers  # Max number of users on the server
@@ -26,6 +27,18 @@ class ServerHostService(Service.ServiceThread):
         self.__serverBanList: list[str] = paramServerBanList  # List of banned users on the server
 
         self.__ready = Event()
+
+
+    """
+            Getter Methods
+    """
+
+    def getServerSecret(self) -> str:
+        """
+        Get the server secret
+        :return: Server secret (str)
+        """
+        return self.__serverSecret
 
     def getServerPort(self) -> int:
         """
@@ -108,7 +121,8 @@ class ServerHostService(Service.ServiceThread):
                                                                       self.getServerPrivateKey(),
                                                                       self.getMaxServerUsers(),
                                                                       self.getServerUserList(),
-                                                                      self.getServerBanList())
+                                                                      self.getServerBanList(),
+                                                                      self.getServerSecret())
 
                     serverConnectionService.start()
                 except socket.timeout:

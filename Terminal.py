@@ -262,8 +262,6 @@ def validateChannel():
 
     except RuntimeError as e:
 
-        print(e)
-
         return jsonify({
             "SUCCESS": False,
             "EXCEPTION": str(e)

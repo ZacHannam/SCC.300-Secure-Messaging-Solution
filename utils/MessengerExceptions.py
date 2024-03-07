@@ -48,7 +48,7 @@ class ServerException(MessengerException):
     INVALID_TERMINAL_URL = MessengerException.Exception(True, "Invalid Terminal URL")
     FAILED_TO_COLLECT_PACKET = MessengerException.Exception(True, "Failed to collect packet")
     INVALID_CHANNEL_ID_HASH = MessengerException.Exception(True, "Invalid channel ID hash in packet")
-    CLIENT_FAILED_CHALLENGE = MessengerException.Exception(True, "Server failed authenticate challenge")
+    CLIENT_FAILED_CHALLENGE = MessengerException.Exception(True, "Client failed authenticate challenge")
     MISSING_RETURN_PACKET = MessengerException.Exception(True, "Failed to authenticate, client didn't send response "
                                                                "packet")
     CRYPTOGRAPHY_EXCEPTION = MessengerException.Exception(True, "Cryptography failed")
@@ -91,6 +91,10 @@ class ClientException(MessengerException):
     FAILED_TO_CONNECT_TIMEOUT = MessengerException.Exception(True, "Failed to connect to server (Timed out)")
     FAILED_TO_LEAVE_SERVER = MessengerException.Exception(True, "Failed to leave server")
     FAILED_VALIDATE_TERMINAL = MessengerException.Exception(True, "Failed to validate terminal")
+
+    FAILED_TO_FIND_FILE = MessengerException.Exception(False, "Failed to find file or directory")
+    EXCEEDS_MAX_FILE_SIZE = MessengerException.Exception(False, "File exceeds max file size")
+
 
 
 class PacketException(MessengerException):

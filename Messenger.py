@@ -1,4 +1,5 @@
 import re
+import time
 from typing import Any
 import sys
 
@@ -189,7 +190,6 @@ class Messenger:
         # 1) Establish the necessary key word arguments
         server_kwargs = dict([(key, kwargs[key]) for key in ["channel_id", "secret_key", "port", "public"]
                               if key in kwargs])
-        client_kwargs = {} if "name" not in kwargs else {"client_displayName": kwargs["name"]}
 
         # 2) Create the server and save it / make it active
         server = Server(paramTerminal, **server_kwargs)
@@ -197,8 +197,12 @@ class Messenger:
 
         if paramJoin:
             # 3) Join a client to server
+
+            client_kwargs = dict([(key, kwargs[key]) for key in ["name"]
+                                 if key in kwargs])
+
             client = Client(server.getTerminal(), server.getChannelID(), server.getIP()['ip'], server.getPort(),
-                            **client_kwargs)
+                            server_secret=server.getSecretKey(), **client_kwargs)
 
             self.addClient(client)
 
@@ -237,7 +241,8 @@ class Messenger:
         """
 
         # 1) Check if the display name is defined
-        client_kwargs = {} if "name" not in kwargs else {"client_displayName": kwargs["name"]}
+        client_kwargs = dict([(key, kwargs[key]) for key in ["name", "server_secret"]
+                              if key in kwargs])
 
         # 2) Get the client from the terminal scan
         client = getClientFromTerminalScan(paramTerminal, paramChannelID, **client_kwargs)
@@ -298,6 +303,29 @@ class Messenger:
                 break
         else:
             info("MESSENGER_NO_CHANNEL", channel_id=paramChannelID)
+
+    def sendFile(self, paramFilePath: str, channel_id: str = None) -> None:
+        """
+        Used to send a file to a channel
+        :param paramFilePath:
+        :param channel_id:
+        :return: None
+        """
+        selectedClient = self.getActiveClient()
+        if channel_id is not None:
+            for client in self.getClients():
+                if client.getChannelID() == channel_id:
+                    selectedClient = client
+                    break
+            else:
+                info("MESSENGER_NO_CHANNEL", channel_id=channel_id)
+                return
+
+        if selectedClient is None:
+            info("MESSENGER_NO_CHANNEL", channel_id="None")
+            return
+
+        selectedClient.sendFile(paramFilePath)
 
     def exit(self) -> None:
         """
@@ -505,8 +533,8 @@ class ArgumentParser:
 
         # 3) Establish the key word arguments
         # Use regex to find and convert kwargs to dict. Keeping a lowercase key
-        self.__kwargs = dict([(g[0].lower(), g[1]) for g in
-                             [f[1:].split(" ") for f in re.findall(r"(\s-\w+\s+\w+)", arguments)]])
+        self.__kwargs = dict([(g[0].lower()[1:], g[1]) for g in
+                             [f[1:].split(" ") for f in re.findall(r"(\s-\w+\s+[^\s]+)", arguments)]])
 
         # Cast all to the correct type (str -> int, bool, etc)
         for key, value in self.getKwargs().items():
@@ -528,7 +556,7 @@ class ArgumentParser:
                                                  "channel_id": str
                                              }),
 
-            COMMAND_KEY + "join_server":  (Messenger.joinServer, "<terminal> <channel_id> [-name]",
+            COMMAND_KEY + "join_server":  (Messenger.joinServer, "<terminal> <channel_id> [-name] [-server_secret]",
                                            {
                                                "terminal": str, "channel_id": str, "name": str
                                            }),
@@ -546,6 +574,10 @@ class ArgumentParser:
                                              {
                                                  "channel_id": str
                                              }),
+            COMMAND_KEY + "send_file": (Messenger.sendFile, "<file_path> [-channel_id]",
+                                        {
+                                            "file_path": str, "channel_id": str
+                                        }),
             COMMAND_KEY + "exit": (Messenger.exit, "", {}),
         }
 

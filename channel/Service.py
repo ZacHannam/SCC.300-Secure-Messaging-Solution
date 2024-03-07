@@ -24,6 +24,7 @@ class ServiceType(Enum):
 
     SEND_PACKET                 = auto()  # Send a packet between client and host                 C
     PACKET_COLLECTOR            = auto()  # Service to collect packets and present them whole     C
+    SERIALIZE_PACKET            = auto()  # Serialize packet                                      C
 
 
 class ServiceThread(Thread, ABC):
@@ -60,4 +61,6 @@ class ServiceThread(Thread, ABC):
         try:
             self.run_safe()
         except MessengerException as exception:
-            info("SERVICE_EXCEPTION", exception=exception.message)
+            info("SERVICE_EXCEPTION", service=self.getThreadType().name, exception=exception.message)
+        except Exception as exception:  # Unexpected
+            info("SERVICE_EXCEPTION", service=self.getThreadType().name, exception=str(exception))

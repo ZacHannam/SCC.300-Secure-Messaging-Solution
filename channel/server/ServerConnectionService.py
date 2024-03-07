@@ -1,5 +1,6 @@
 import hashlib
 import socket
+import string
 import time
 from threading import Event
 
@@ -9,7 +10,10 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
 from cryptography.hazmat.primitives.asymmetric import padding
 
-from Properties import LEGAL_DISPLAY_NAME_CHARACTERS, CHANNEL_USER_DISPLAY_NAME_MAX, MAXIMUM_MESSAGE_SIZE
+from Properties import LEGAL_DISPLAY_NAME_CHARACTERS, CHANNEL_USER_DISPLAY_NAME_MAX, MAXIMUM_MESSAGE_SIZE, \
+    MAX_FILE_SIZE_BYTES
+from channel.server.packet.S2C_FileSendPacket import FileSendPacket
+from channel.server.packet.S2C_ServerReceivedFile import ServerReceivedFile
 from utils.MessengerExceptions import ServerException
 from channel.Packet import PacketCollector, Packet, sendPacket, PacketType
 from channel.server.packet.S2C_AuthenticatePacket import ServerAuthenticatePacket
@@ -25,7 +29,7 @@ from channel import Service
 class ServerConnectionService(Service.ServiceThread):
     def __init__(self, paramClientAddress: tuple, paramConnection: socket.socket, paramChannelID: str,
                  paramServerPrivateKey: RSAPrivateKey, paramServerMaxUsers: int, paramServerUserList: list,
-                 paramServerBanList: list):
+                 paramServerBanList: list, paramServerSecret: str):
         """
         Connect the client service
         :param paramClientAddress: (ip, port)
@@ -39,6 +43,7 @@ class ServerConnectionService(Service.ServiceThread):
         self.__channelID: str = paramChannelID                          # Channel ID
         self.__serverPrivateKey: RSAPrivateKey = paramServerPrivateKey  # Server Private Key
         self.__lastAliveTime: int = int(time.time())                    # Last time client was alive
+        self.__serverSecret: str = paramServerSecret
 
         # Obtained client information
         self.__displayName: str | None = None                  # Client display name
@@ -56,11 +61,19 @@ class ServerConnectionService(Service.ServiceThread):
         self.__serverMaxUsers: int = paramServerMaxUsers                            # Max number of users on the server
         self.__serverUserList: list[ServerConnectionService] = paramServerUserList  # List of of users on the server
         self.__serverBanList: list[str] = paramServerBanList                        # List of banned users on the server
+        self.__adminPermission: bool = False
 
 
     """
             Getter Methods
     """
+
+    def getServerSecret(self) -> str:
+        """
+        Get the server secret
+        :return: Server secret (str)
+        """
+        return self.__serverSecret
 
     def getChannelID(self) -> str:
         """
@@ -97,6 +110,21 @@ class ServerConnectionService(Service.ServiceThread):
         :return: List of ips banned on the server
         """
         return self.__serverBanList
+
+    def getAdminPermission(self) -> bool:
+        """
+        Check if the admin permission is true
+        :return:
+        """
+        return self.__adminPermission
+
+    def setAdminPermission(self, paramAdminPermission: bool) -> None:
+        """
+        Set admin status
+        :param paramAdminPermission: bool
+        :return: None
+        """
+        self.__adminPermission = paramAdminPermission
 
     """
             RSA
@@ -170,8 +198,8 @@ class ServerConnectionService(Service.ServiceThread):
 
         self.getServerUserList().append(self)
 
-        userJoinPacket = UserJoinPacket(self.getDisplayName())
-        self.sendToAllRecipients(userJoinPacket)
+        userJoinPacket = UserJoinPacket(self.getDisplayName(True))
+        self.sendToAllRecipients(userJoinPacket, True)
 
     def unregisterUser(self) -> None:
         """
@@ -182,8 +210,8 @@ class ServerConnectionService(Service.ServiceThread):
         if self in self.getServerUserList():  # Make sure the user is registered
             self.getServerUserList().remove(self)
 
-        userLeavePacket = UserLeavePacket(self.getDisplayName())
-        self.sendToAllRecipients(userLeavePacket)
+            userLeavePacket = UserLeavePacket(self.getDisplayName(True))
+            self.sendToAllRecipients(userLeavePacket, True)
 
     def setDisplayName(self, paramDisplayName: str) -> None:
         """
@@ -192,12 +220,13 @@ class ServerConnectionService(Service.ServiceThread):
         """
         self.__displayName = paramDisplayName
 
-    def getDisplayName(self) -> str:
+    def getDisplayName(self, paramIncludeLevel) -> str:
         """
         Get the display name of the client
         :return: User display name (str)
         """
-        return self.__displayName
+        return f"{self.__displayName}: Admin" if (self.getAdminPermission() and paramIncludeLevel)\
+            else self.__displayName
 
     def getLastAliveTime(self) -> int:
         """
@@ -259,14 +288,21 @@ class ServerConnectionService(Service.ServiceThread):
             # the server ready to send them
             sendPacket(paramPacket, (self.getConnection(), self.getClientPublicKey()))
 
-    def sendToAllRecipients(self, paramPacket: Packet) -> None:
+    def sendToAllRecipients(self, paramPacket: Packet, paramIncludeSelf: bool) -> None:
         """
         Send a packet to everyone on the server
-        :param paramPacket:
+        :param paramIncludeSelf: Should this packet be sent to self
+        :param paramPacket: Packet to send
         :return:
         """
-        for connection in self.getServerUserList():  # Iterate over everyone in the server
-            connection.sendPacket(paramPacket)
+        connections = []
+
+        for serverConnectionService in self.getServerUserList():
+            if serverConnectionService == self and not paramIncludeSelf:
+                continue
+            connections.append((serverConnectionService.getConnection(), serverConnectionService.getClientPublicKey()))
+
+        sendPacket(paramPacket, connections)
 
     def getConnection(self) -> socket.socket:
         """
@@ -313,8 +349,7 @@ class ServerConnectionService(Service.ServiceThread):
                 raise ServerException(self.getStopEvent(), ServerException.INVALID_CHANNEL_ID_HASH)
 
             # 1.3) Load the public key
-            der_key_size = authenticate_packetBin.getAttribute("PUBLIC_KEY_LENGTH")
-            der_key = authenticate_packetBin.getAttribute("CLIENT_PUBLIC_KEY").to_bytes(der_key_size, byteorder="big")
+            der_key = authenticate_packetBin.getAttributeBytes("CLIENT_PUBLIC_KEY")
 
             client_public_key = serialization.load_der_public_key(
                 der_key,
@@ -335,6 +370,7 @@ class ServerConnectionService(Service.ServiceThread):
             )
 
             """ 2) Send The Server Authenticate Packet To The Client """
+
             serverAuthenticatePacket = ServerAuthenticatePacket(self.getChannelID(),
                                                                 self.getServerPublicKey(),
                                                                 clientEncryptedChallenge)  # Construct the packet
@@ -372,6 +408,9 @@ class ServerConnectionService(Service.ServiceThread):
             # 3.5) Check if client has successfully completed the challenge
             if decryptedClientChallenge != serverAuthenticatePacket.getChallenge() +\
                     self.getChannelID().encode('utf-8'):
+                print("Server 1)", decryptedClientChallenge, "2)",
+                      serverAuthenticatePacket.getChallenge() + self.getChannelID().encode('utf-8'))
+
                 raise ServerException(self.getStopEvent(), ServerException.CLIENT_FAILED_CHALLENGE)
 
         except (ValueError, cryptography.exceptions.NotYetFinalized, cryptography.exceptions.InvalidKey):
@@ -388,7 +427,7 @@ class ServerConnectionService(Service.ServiceThread):
         try:
             # 1) Send user data request
             serverRequestUserData = RequestUserData()  # Construct request user data packet
-            sendPacket(serverRequestUserData, (self.getConnection(), self.getClientPublicKey()))  # Send packet
+            self.sendPacket(serverRequestUserData)  # Send packet
 
             # 2) Receive user data from client
             user_dataPacket = self.getPacketCollector().awaitPacket(packet_type=PacketType.C2S_USER_DATA)
@@ -409,6 +448,13 @@ class ServerConnectionService(Service.ServiceThread):
             # 3) Set the user display name
             self.setDisplayName(displayName[:min(len(displayName), CHANNEL_USER_DISPLAY_NAME_MAX)])
 
+            # 4) Check for server secret
+            encodedServerSecret = userData_packetBin.getAttributeBytes("SERVER_SECRET")  # Server secret
+            if encodedServerSecret is not None and len(encodedServerSecret) != 0:  # Check the server secret
+                serverSecret = encodedServerSecret.decode('utf-8')
+                if serverSecret == self.getServerSecret():
+                    self.setAdminPermission(True)
+
         except (socket.timeout, socket.error, ConnectionResetError):  # If a socket exception happens
             raise ServerException(self.getStopEvent(), ServerException.SOCKET_EXCEPTION)
 
@@ -426,13 +472,39 @@ class ServerConnectionService(Service.ServiceThread):
             userErrors.append("You are banned from this channel!")
 
         for user in self.getServerUserList():
-            if user.getDisplayName == self.getDisplayName():
+            if user.getDisplayName(False) == self.getDisplayName(False):
                 userErrors.append("Someone with that display name is already online!")
                 break
 
+        if "admin" in self.getDisplayName(False).lower():
+            userErrors.append("Admin is a protected name")
+
+        if any([character not in string.ascii_letters + string.digits + "_" for character
+                in self.getDisplayName(False)]):
+            userErrors.append("Display name contains illegal characters")
+
         return userErrors  # Return all the errors
 
+    def sendServerInformation(self) -> None:
+        """
+        Send the server information to client
+        :return: None
+        """
+
+        message = [
+            f"Currently Online: ({len(self.getServerUserList())}/{self.getMaxServerUsers()})",
+            f"Users: {', '.join([user.getDisplayName(True) for user in self.getServerUserList()])}",
+            f"Permission Level: {'Admin' if self.getAdminPermission() else 'User'}",
+        ]
+
+        infoMessagePacket = InfoMessagePacket("\n".join(message))
+        self.sendPacket(infoMessagePacket)
+
     def startListener(self):
+        """
+        Listen and respond to socket
+        :return:None
+        """
         while not self.__stop.is_set():
             try:
                 packet =  self.getPacketCollector().awaitPacket()  # Await a packet from client
@@ -461,8 +533,40 @@ class ServerConnectionService(Service.ServiceThread):
                             self.sendInfoToUser(f"Message exceeds maximum size of: {MAXIMUM_MESSAGE_SIZE}")
                             continue
 
-                        textMessagePacket = TextMessagePacket(self.getDisplayName(), message)
-                        self.sendToAllRecipients(textMessagePacket)
+                        textMessagePacket = TextMessagePacket(self.getDisplayName(True), message)
+                        self.sendToAllRecipients(textMessagePacket, True)
+                    case PacketType.C2S_FILE_SEND:
+
+                        encodedFileName = packetBin.getAttributeBytes("FILE_NAME")
+                        if encodedFileName is None:
+                            continue
+
+                        # Create confirmation packet
+                        fileName = encodedFileName.decode('utf-8')
+                        serverReceivedPacket = ServerReceivedFile(fileName)
+
+                        file_bytes = packetBin.getAttributeBytes("FILE_DATA")
+
+                        if "./" in fileName:
+                            serverReceivedPacket.setError(f"File name contains './'")
+
+                        # Add error to packet
+                        if len(file_bytes) > MAX_FILE_SIZE_BYTES:
+                            serverReceivedPacket.setError(f"File exceeds maximum size of: {MAX_FILE_SIZE_BYTES} bytes")
+
+                        # Send confirmation to client that it received the file
+                        self.sendPacket(serverReceivedPacket)
+
+                        # continue if it has error
+                        if serverReceivedPacket.getError() is not None:
+                            continue
+
+                        # Send file to everyone else
+                        fileSendPacket = FileSendPacket(fileName, file_bytes, self.getDisplayName(True))
+                        self.sendToAllRecipients(fileSendPacket, False)
+
+                    case _:
+                        continue  # Received unrecognised packet
 
             except (cryptography.exceptions.NotYetFinalized, cryptography.exceptions.InvalidKey):
                 raise ServerException(self.getStopEvent(), ServerException.CRYPTOGRAPHY_EXCEPTION)
@@ -478,22 +582,28 @@ class ServerConnectionService(Service.ServiceThread):
             if self.getClientPublicKey() is None:
                 raise ServerException(self.getStopEvent(), ServerException.FAILED_TO_GET_CLIENT_PUBLIC_KEY)
 
+            self.getReadyEvent().set()
+
             # 3) Get user info (just display name but expandable for later)
             self.getUserData()
-            if self.getDisplayName() is None:
+            if self.getDisplayName(False) is None:
                 raise ServerException(self.getStopEvent(), ServerException.FAILED_TO_GET_CLIENT_CREDENTIALS)
 
-            # 4) Check if user passes checks i.e bans, and number of people online
-            clientServer_errors = self.getClientServerErrors()
 
-            if len(clientServer_errors) > 0:
-                clientDisconnectPacket = ClientDisconnectPacket(", ".join(clientServer_errors))
-                self.sendPacket(clientDisconnectPacket)
-                raise ServerException(self.getStopEvent(), ServerException.CLIENT_REJECTED)
+            # 4) Check if user passes checks i.e bans, and number of people online
+            if not self.getAdminPermission():
+                clientServer_errors = self.getClientServerErrors()
+
+                if len(clientServer_errors) > 0:
+                    clientDisconnectPacket = ClientDisconnectPacket(", ".join(clientServer_errors))
+                    self.sendPacket(clientDisconnectPacket)
+
+                    raise ServerException(self.getStopEvent(), ServerException.CLIENT_REJECTED)
 
             # 5) Register user
-            self.getReadyEvent().set()
             self.registerUser()
+
+            self.sendServerInformation()
 
             self.startListener()
 

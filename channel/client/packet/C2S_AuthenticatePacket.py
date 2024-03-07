@@ -66,7 +66,6 @@ class ClientAuthenticatePacket(Packet.Packet):
         packet_bin.setAttribute("CHANNEL_HASH", self.getChannelIDHash())  # Channel ID hashed
 
         public_key_der = self.getClientPublicKeyBytes()
-        packet_bin.setAttribute("PUBLIC_KEY_LENGTH", len(public_key_der))  # Length of the public key
         packet_bin.setAttribute("CLIENT_PUBLIC_KEY", public_key_der)  # The client's public key
 
         packet_bin.setAttribute("CHALLENGE", self.getChallenge())  # Challenge for the server
@@ -79,4 +78,4 @@ def generateRandomChallenge() -> bytes:
     Generate a random challenge for the server
     :return: Random challenge (bytes)
     """
-    return os.urandom(32)
+    return b'\01' + os.urandom(32)  # If it starts with \00 then it causes errors with bins

@@ -1,27 +1,30 @@
 import random
 from threading import Event
+import os
 
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
 
-from Properties import CHANNEL_USER_DISPLAY_NAME_MAX, NAMES_LIST_FILE, TERMINAL_PROTOCOL, RSA_KEY_SIZE
+from Properties import CHANNEL_USER_DISPLAY_NAME_MAX, NAMES_LIST_FILE, TERMINAL_PROTOCOL, RSA_KEY_SIZE,\
+    MAX_FILE_SIZE_BYTES
 from channel.client.ClientConnectionService import ClientConnectionService
 from channel.client.TerminalScanService import TerminalScanService
 from utils.BinarySequencer import Bin, getBinSize
 from Properties import CHANNEL_INFO_BIN_DIMENSIONS
+from utils.Language import info
 from utils.MessengerExceptions import ClientException
 
 
 class Client:
     def __init__(self, paramServerTerminal: str, paramChannelID: str, paramServerIP: str, paramServerPort: int,
-                 client_displayName=None):
+                 name=None, server_secret: str | None = None):
         """
         A client that connects to a server
         :param paramServerTerminal: Server Terminal URL
         :param paramChannelID: Channel ID of the Server
         :param paramServerIP: IP of the Server
         :param paramServerPort: Server Port
-        :param client_displayName: Connection display name
+        :param name: Connection display name
         """
 
         # Validate that the server terminal starts with an accepted protocol
@@ -29,25 +32,34 @@ class Client:
             raise ClientException(None, ClientException.INVALID_TERMINAL_URL)
 
         self.__serverTerminal: str = paramServerTerminal  # Server Terminal URL
-        self.__serverIP: str = paramServerIP              # Server IP (x.x.x.x / a:a:a:a:a:a:a:a / http(s)://...)
-        self.__serverPort: int = paramServerPort          # Server Port
-        self.__channelID: str = paramChannelID            # Server Channel Name/ID
+        self.__serverIP: str = paramServerIP  # Server IP (x.x.x.x / a:a:a:a:a:a:a:a / http(s)://...)
+        self.__serverPort: int = paramServerPort  # Server Port
+        self.__channelID: str = paramChannelID  # Server Channel Name/ID
+        self.__serverSecret: str | None = server_secret
 
         # Generate a display name or generate one
-        self.__clientDisplayName = client_displayName if client_displayName is not None else generateDisplayName()
+        self.__clientDisplayName = name if name is not None else generateDisplayName()
 
-        self.__privateKey: RSAPrivateKey = generatePrivateKey()   # Create private and public RSA key for client
+        self.__privateKey: RSAPrivateKey = generatePrivateKey()  # Create private and public RSA key for client
 
-        self.__stop = Event()       # Stop Event
+        self.__stop = Event()  # Stop Event
 
-        self.__serverPublicKey = None                   # Store the server public key
-        self.__clientConnectService = None              # The client's connection to the server thread
+        self.__serverPublicKey = None  # Store the server public key
+        self.__clientConnectService = None  # The client's connection to the server thread
 
         # Connect to the server
-        self.__connectToServer()
+        self.connectToServer()
+
     """
             Getter Methods
     """
+
+    def getServerSecret(self) -> str | None:
+        """
+        Return the server secret if it is set
+        :return:
+        """
+        return self.__serverSecret
 
     def getStopEvent(self) -> Event:
         """
@@ -131,13 +143,40 @@ class Client:
         except ConnectionAbortedError:  # Catch any errors thrown
             raise ClientException(None, ClientException.FAILED_TO_LEAVE_SERVER)
 
-    def sendMessage(self, paramMessage) -> None:
+    def sendMessage(self, paramMessage: str) -> None:
         """
         Send a message to the server in the form of text
         :param paramMessage: Message sent to other clients and server
         :return: None
         """
         self.getClientConnection().sendTextMessage(paramMessage)  # Send message through connection
+
+    def sendFile(self, paramFilePath: str) -> None:
+        """
+        Send a file to server
+        :param paramFilePath: File or directory path
+        :return: None
+        """
+        try:
+            files = recursiveFileFinder(paramFilePath)  # Get files from file path
+        except FileNotFoundError:
+            raise ClientException(self.getStopEvent(), ClientException.FAILED_TO_FIND_FILE)
+
+        directory = os.path.dirname(paramFilePath)
+
+        # Iterate over files
+        for file in files:
+            file_stats = os.stat(file)
+            if file_stats.st_size > MAX_FILE_SIZE_BYTES:
+                raise ClientException(self.getStopEvent(), ClientException.EXCEEDS_MAX_FILE_SIZE)
+
+            file_name = file[len(directory) + 1:]
+            info("SENDING_FILE", file_name=file_name, channel_id=self.getChannelID())
+
+            with open(file, "rb") as openFile:
+                file_bytes = openFile.read()
+
+            self.getClientConnection().sendFileBytes(file_name, file_bytes)
 
     """
             CONNECT
@@ -150,7 +189,7 @@ class Client:
         """
         return self.__clientConnectService
 
-    def __connectToServer(self) -> None:
+    def connectToServer(self) -> None:
         """
         Establish socket with the server
         :return: None
@@ -159,7 +198,8 @@ class Client:
         # Start the client connection service
         clientConnectService = ClientConnectionService(self.getServerIP(), self.getServerPort(), self.getStopEvent(),
                                                        self.getClientDisplayName(), self.getChannelID(),
-                                                       self.getPrivateKey(), self.getServerPublicKey())
+                                                       self.getPrivateKey(), self.getServerPublicKey(),
+                                                       self.getServerSecret())
         clientConnectService.start()  # Start the client connection service
 
         self.__clientConnectService = clientConnectService  # Set the client connection
@@ -191,7 +231,7 @@ def generateDisplayName(max_length=CHANNEL_USER_DISPLAY_NAME_MAX) -> str:
     with open(NAMES_LIST_FILE) as nameFile:  # Read the names in the names list
         names = nameFile.readlines()
 
-        selectName = lambda : names[random.randint(0, len(names))]  # Select a random name / line
+        selectName = lambda: names[random.randint(0, len(names))]  # Select a random name / line
         while (selectedName := selectName()) in ("", None):  # Make sure the name selected is not empty (double check)
             continue
 
@@ -203,13 +243,14 @@ def generateDisplayName(max_length=CHANNEL_USER_DISPLAY_NAME_MAX) -> str:
 
 
 def getClientFromBin(paramTerminal: str, paramChannelID: str, paramBin: Bin,
-                     client_displayName=None) -> Client:
+                     name=None, server_secret=None) -> Client:
     """
     Create a client object from the client binary sequencer
+    :param server_secret: Server secret
     :param paramTerminal: The terminal URL
     :param paramChannelID: The channel ID
     :param paramBin: The client info bin
-    :param client_displayName: The client display name
+    :param name: The client display name
     :return: Client generated
     """
 
@@ -221,7 +262,7 @@ def getClientFromBin(paramTerminal: str, paramChannelID: str, paramBin: Bin,
         raise ClientException(None, ClientException.FAILED_TO_CREATE_CLIENT_FROM_BIN)
 
     # 2) Get the IP from the bin
-    ip_type, ip_placement, ip  = paramBin.getAttribute("IP_TYPE", "IP_PLACEMENT", "IP")
+    ip_type, ip_placement, ip = paramBin.getAttribute("IP_TYPE", "IP_PLACEMENT", "IP")
 
     # Find the IP length from the IP type
     match ip_type:
@@ -261,15 +302,16 @@ def getClientFromBin(paramTerminal: str, paramChannelID: str, paramBin: Bin,
     port = paramBin.getAttribute("PORT")
 
     # 5) Generate and return the generated client
-    return Client(paramTerminal, paramChannelID, ip, port, client_displayName=client_displayName)
+    return Client(paramTerminal, paramChannelID, ip, port, name=name, server_secret=server_secret)
 
 
-def getClientFromTerminalScan(paramTerminal: str, paramChannelID: str, client_displayName=None) -> Client:
+def getClientFromTerminalScan(paramTerminal: str, paramChannelID: str, name=None, server_secret=None) -> Client:
     """
     Run a terminal scan to find the desired server and create a user from it
+    :param server_secret: Server secret
     :param paramTerminal: The Terminal to scan
     :param paramChannelID: The channel id to search for
-    :param client_displayName: The display name to generate
+    :param name: The display name to generate
     :return: Client generated from scan
     """
     terminalScanService = TerminalScanService(paramTerminal, paramChannelID)  # Start the terminal scan service
@@ -280,4 +322,24 @@ def getClientFromTerminalScan(paramTerminal: str, paramChannelID: str, client_di
         raise ClientException(None, ClientException.NO_CHANNEL_ON_TERMINAL)
 
     return getClientFromBin(paramTerminal, paramChannelID, terminalScanService.getResult(),
-                            client_displayName=client_displayName)  # Creates a client from the collected information
+                            name=name, server_secret=server_secret)  # Creates a client from the collected information
+
+
+def recursiveFileFinder(paramFolderPath: str) -> list[str]:
+    """
+    Return all files in folder
+    :param paramFolderPath: Folder path
+    :return: list of file paths
+    """
+    files = []
+
+    if not os.path.isdir(paramFolderPath):
+        return [paramFolderPath]
+
+    for file in os.listdir(paramFolderPath):
+        filePath = os.path.join(paramFolderPath, file)
+        if os.path.isdir(filePath):
+            files = files + recursiveFileFinder(filePath)
+        else:
+            files.append(filePath)
+    return files

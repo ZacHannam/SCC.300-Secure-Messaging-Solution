@@ -350,7 +350,7 @@ class Server:
 
         serverHostService = ServerHostService(self.getPort(), self.getStopEvent(), self.getChannelID(),
                                               self.getServerPrivateKey(), self.getMaxNumberOfUsers(),
-                                              self.getUserList(), self.getBannedUsers())
+                                              self.getUserList(), self.getBannedUsers(), self.getSecretKey())
 
         serverHostService.start()  # Start the host service
         self.__serverHostService = serverHostService

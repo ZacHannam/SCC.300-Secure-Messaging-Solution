@@ -42,6 +42,10 @@ class PacketType(Enum):
     S2C_CLIENT_DISCONNECT        = (0x61, S2C_CLIENT_DISCONNECT)  # Sent to client to kick them from the server
     C2S_USER_LEAVE               = (0x62, C2S_USER_LEAVE)  # Sent to server when user leaves
 
+    S2C_FILE_SEND                = (0x71, S2C_FILE_SEND)  # Sent to client as a file
+    C2S_FILE_SEND                = (0x72, C2S_FILE_SEND)  # Sent to server as a file
+    S2C_SERVER_RECEIVED_FILE     = (0x73, S2C_SERVER_RECEIVED_FILE)  # Tell client server received file
+
 
 # Enumeration of all the packet, 0x## -> PacketType
 PACKET_TYPE_ENUMERATION = dict([(packet.value[0], packet) for packet in PacketType])
@@ -106,31 +110,60 @@ class Packet(ABC):
         raise NotImplementedError("build method not implemented")
 
 
-    """
-            Packet Conversion
-    """
+class PacketSerializer(Service.ServiceThread):
+    def __init__(self, paramPacket: Packet):
+        """
+        Serializes the packet
+        :param paramPacket: packet to serialize
+        """
+        super().__init__(Service.ServiceType.SERIALIZE_PACKET)
 
-    def getPackets(self) -> tuple[bool, list[Bin]]:
+        self.__packet = paramPacket
+
+        # To be found
+        self.__packetBins: list[Bin] | None = None
+
+    def getPacketBins(self) -> list[Bin]:
         """
-        Split all the packets into the correct sizes and headers
-        :return: tuple[is Encrypted, list[Packet Binaries])
+        Get the packet bins
+        :return: list[Bin]
         """
+        return self.__packetBins
+
+    def setPacketBins(self, paramPacketBins: list[Bin]) -> None:
+        """
+        Set the packet bins
+        :param paramPacketBins: Packet bins
+        :return: None
+        """
+        self.__packetBins = paramPacketBins
+
+    def getPacket(self) -> Packet:
+        """
+        Get the packet to be serialized
+        :return: Packet
+        """
+        return self.__packet
+
+    def run_safe(self):
+        # Split all the packets into the correct sizes and headers
 
         # 1) Choose the correct bin based on if its encrypted
-        selectedBin = PACKET_BIN_ENCRYPTED if self.isEncrypted() else PACKET_BIN_UNENCRYPTED
-        assert getBinSize(selectedBin) == (PACKET_MAX_SIZE // 2 if self.isEncrypted() else PACKET_MAX_SIZE)
+        selectedBin = PACKET_BIN_ENCRYPTED if self.getPacket().isEncrypted() else PACKET_BIN_UNENCRYPTED
+        assert getBinSize(selectedBin) == (PACKET_MAX_SIZE // 2 if self.getPacket().isEncrypted() else PACKET_MAX_SIZE)
 
         # 2) Get the attributes of the bin
-        contentLength, authSize, maxPacketSize = getAttributeSize(selectedBin, "CONTENT", "PACKET_AUTH", "PACKET_SIZE")
+        contentLength, authSize, maxPacketSize = getAttributeSize(selectedBin, "CONTENT", "PACKET_AUTH",
+                                                                  "PACKET_SIZE")
 
         # 3) Create a random packet id
         packet_auth = random.getrandbits(authSize)
 
         # 4) Build the packet, get the bin and convert it to an int, to be transferred back into that bin later
-        packet = self.build()
+        packet = self.getPacket().build()
 
         # Check that the dimensions are what is expected of the packet
-        if packet.getDimensions() != self.getPacketType().value[1]:
+        if packet.getDimensions() != self.getPacket().getPacketType().value[1]:
             raise PacketException(None, PacketException.PACKET_INCORRECT_DIMENSIONS)  # Raise exception
 
         packet_result = packet.getResult()
@@ -140,14 +173,14 @@ class Packet(ABC):
         packets_results = [(packet_result >> (i * contentLength)) & ((2 ** contentLength) - 1)
                            for i in range(math.ceil(packet_length / contentLength) - 1, -1, -1)]
         if not len(packets_results):
-            packets_results = [0]  # Make sure at least one packet is sent even when there is no content i.e S2C_Alive
-
+            packets_results = [
+                0]  # Make sure at least one packet is sent even when there is no content i.e S2C_Alive
 
         if len(packets_results) >= (2 ** maxPacketSize):  # Check that there are enough sequence IDs available
             raise PacketException(None, PacketException.CONTENT_TOO_LARGE)  # Raise exception
 
         # 6) Create the packet binaries
-        packetBins = [Bin(PACKET_BIN_ENCRYPTED if self.isEncrypted() else PACKET_BIN_UNENCRYPTED)
+        packetBins = [Bin(PACKET_BIN_ENCRYPTED if self.getPacket().isEncrypted() else PACKET_BIN_UNENCRYPTED)
                       for _ in packets_results]
 
         # 6.1) Attach the content and headers to the packet
@@ -156,22 +189,24 @@ class Packet(ABC):
             packet_bin.setAttribute("PACKET_AUTH", packet_auth)
             packet_bin.setAttribute("PACKET_SIZE", len(packetBins))
             packet_bin.setAttribute("PACKET_NUMBER", index + 1)
-            packet_bin.setAttribute("PACKET_ID", self.getPacketType().value[0])
+            packet_bin.setAttribute("PACKET_ID", self.getPacket().getPacketType().value[0])
 
-        return self.isEncrypted(), packetBins
+        self.setPacketBins(packetBins)
 
 
 class PacketSender(Service.ServiceThread):
-    def __init__(self, paramPacket: Packet, paramConnection: socket.socket, paramClientPublicKey: RSAPublicKey | None):
+    def __init__(self, paramIsEncrypted: bool, paramPacketBins: list[Bin], paramConnection: socket.socket,
+                 paramClientPublicKey: RSAPublicKey | None):
         """
         Used to send a packet to the other socket
-        :param paramPacket: Packet being sent
+        :param paramPacketBins: Packet being sent
         :param paramConnection: Connection being sent to
         :param paramClientPublicKey: The public key of the client/server being sent to
         """
         super().__init__(Service.ServiceType.SEND_PACKET)
 
-        self.__packet: Packet = paramPacket  # Packet being sent
+        self.__isEncrypted: bool = paramIsEncrypted  # Is the packet encrypted
+        self.__packetBins: list[Bin] = paramPacketBins  # Packet being sent
         self.__connection: socket.socket = paramConnection  # Connection to send packet to
         self.__clientPublicKey: RSAPublicKey | None = paramClientPublicKey  # Their public key if available
 
@@ -180,12 +215,19 @@ class PacketSender(Service.ServiceThread):
             Getter Methods
     """
 
-    def getPacket(self) -> Packet:
+    def isEncrypted(self) -> bool:
+        """
+        If the packet should be encrypted
+        :return: bool
+        """
+        return self.__isEncrypted
+
+    def getPacketBins(self) -> list[Bin]:
         """
         Get the packet being sent
         :return: Packet
         """
-        return self.__packet
+        return self.__packetBins
 
     def getConnection(self) -> socket.socket:
         """
@@ -208,7 +250,7 @@ class PacketSender(Service.ServiceThread):
         """
 
         # 1) Convert the packets into send-able packets
-        isEncrypted, packetBins = self.getPacket().getPackets()
+        isEncrypted, packetBins = self.isEncrypted(), self.getPacketBins()
 
         # 2) Validate that the encryption is there if its necessary
         if not ((isEncrypted and self.getClientPublicKey() is not None) or not isEncrypted):
@@ -262,7 +304,9 @@ class PacketSender(Service.ServiceThread):
                 self.getConnection().sendall(packetData)  # Send the packet to the socket
         except BrokenPipeError:
             raise PacketException(None, PacketException.FAILED_TO_SEND_PACKET)  # Raise exception
-            # If there is a broken pipe simply just stop trying. It is probably where the client
+        except OSError:
+            raise PacketException(None, PacketException.FAILED_TO_SEND_PACKET)  # Raise exception
+            # If there is a broken pipe or os error simply just stop trying. It is probably where the client
             # closes the connection before we know. They wont be sent after alive checker removes them
 
 
@@ -510,12 +554,19 @@ def sendPacket(paramPacket: Packet, paramConnection: tuple[socket.socket, RSAPub
     :param paramConnection: socket and public key to send packet to or list of socket and public keys
     :return: None
     """
+
+    packetSerializer = PacketSerializer(paramPacket)  # Serialize the packets
+    packetSerializer.start()
+    packetSerializer.join()  # Wait for packet serialization to finish
+
     if isinstance(paramConnection, tuple):  # Check if only one connection
         connection, public_key = paramConnection  # unpack the connection
-        packetSender = PacketSender(paramPacket, connection, public_key)
+
+        packetSender = PacketSender(paramPacket.isEncrypted(), packetSerializer.getPacketBins(), connection, public_key)
         packetSender.start()  # Start asynchronous packet sender thread
 
     else:
         for connection, public_key in paramConnection:
-            packetSender = PacketSender(paramPacket, connection, public_key)
+            packetSender = PacketSender(paramPacket.isEncrypted(), packetSerializer.getPacketBins(), connection,
+                                        public_key)
             packetSender.start()  # Start asynchronous packet sender thread

@@ -6,12 +6,10 @@ from utils.BinarySequencer import ArbitraryValue
 """
 
 C2S_AUTHENTICATE_DIMENSIONS = [("CHANNEL_HASH", 256),
-                               ("PUBLIC_KEY_LENGTH", 16),
                                ("CLIENT_PUBLIC_KEY", ArbitraryValue.DYNAMIC),
                                ("CHALLENGE", ArbitraryValue.DYNAMIC)]
 
 S2C_AUTHENTICATE_DIMENSIONS = [("CHANNEL_HASH", 256),
-                               ("PUBLIC_KEY_LENGTH", 16),
                                ("SERVER_PUBLIC_KEY", ArbitraryValue.DYNAMIC),
                                ("CHALLENGE", ArbitraryValue.DYNAMIC),
                                ("SIGNED_CHALLENGE", ArbitraryValue.DYNAMIC)]
@@ -43,15 +41,25 @@ S2C_REQUEST_USER_DATA = []
 
 S2C_ALIVE = []
 
+S2C_FILE_SEND = [("FILE_NAME", ArbitraryValue.DYNAMIC),
+                 ("FILE_DATA", ArbitraryValue.DYNAMIC),
+                 ("FILE_SENDER", ArbitraryValue.DYNAMIC)]
+
+S2C_SERVER_RECEIVED_FILE = [("FILE_NAME", ArbitraryValue.DYNAMIC),
+                            ("ERROR", ArbitraryValue.DYNAMIC)]
+
 """
         Client -> Server
 """
 
-C2S_USER_DATA = [("DISPLAY_NAME_LENGTH", ArbitraryValue.DYNAMIC),
-                 ("DISPLAY_NAME", ArbitraryValue.DYNAMIC)]
+C2S_USER_DATA = [("DISPLAY_NAME", ArbitraryValue.DYNAMIC),
+                 ("SERVER_SECRET", ArbitraryValue.DYNAMIC)]
 
 C2S_TEXT_MESSAGE = [("MESSAGE", ArbitraryValue.DYNAMIC)]
 
 C2S_ALIVE_RESPONSE = []
 
 C2S_USER_LEAVE = []
+
+C2S_FILE_SEND = [("FILE_NAME", ArbitraryValue.DYNAMIC),
+                 ("FILE_DATA", ArbitraryValue.DYNAMIC)]

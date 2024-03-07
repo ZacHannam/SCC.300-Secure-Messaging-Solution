@@ -43,13 +43,16 @@ CHANNEL_ID_LENGTH              = (14, 20)                               # Channe
 CHANNEL_SECRET_KEY_LENGTH      = (20, 28)                               # Channel Secret Key (generated)
 NAMES_LIST_FILE                = "utils/names_list.txt"                 # List of names for generated names
 PACKET_MAX_SIZE                = 8192                                   # Packet size maximum (bits)
-ALIVE_TIME                     = 1                                      # Seconds between sending alive packets
-ALIVE_TIMEOUT                  = 3                                      # Alive timeout
+ALIVE_TIME                     = 20                                     # Seconds between sending alive packets
+ALIVE_TIMEOUT                  = 120                                    # Alive timeout
 MAXIMUM_MESSAGE_SIZE           = 500                                    # Character limit for messages
 COMMAND_KEY                    = '/'                                    # Messenger command character
 DEFAULT_BAN_REASON             = "You were banned from this channel!"   # Default ban reason
 LEGAL_DISPLAY_NAME_CHARACTERS  = string.ascii_letters + string.digits   # List of allowed username characters
 MESSENGER_DEFAULT_LANGUAGE     = "english"                              # Default language for messenger
+MAX_FILE_SIZE_BYTES            = 1_000_000_000                          # Maximum file size
+FILE_SAVE_LOCATION             = "Messenger/saved-files"                # Where files should be saved on the client
+AUTOMATICALLY_OPEN_FILES       = True                                   # Automatically opened saved files
 
 """
         Terminal

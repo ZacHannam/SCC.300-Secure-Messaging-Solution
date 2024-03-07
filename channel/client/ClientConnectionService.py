@@ -1,3 +1,6 @@
+import os
+import subprocess
+import sys
 from threading import Event
 import hashlib
 import socket
@@ -8,6 +11,8 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
 from cryptography.hazmat.primitives.asymmetric import padding
 
+from Properties import MAX_FILE_SIZE_BYTES, FILE_SAVE_LOCATION, AUTOMATICALLY_OPEN_FILES
+from channel.client.packet.C2S_FIleSendPacket import FileSendPacket
 from utils.Language import info
 from utils.MessengerExceptions import ClientException
 from channel.Packet import PacketCollector, sendPacket, PacketType
@@ -23,7 +28,8 @@ from channel import Service
 class ClientConnectionService(Service.ServiceThread):
     def __init__(self, paramServerIP: str, paramServerPort: int, paramStopEvent: Event,
                  paramClientDisplayName: str, paramChannelID: str,
-                 paramClientPrivateKey: RSAPrivateKey, paramServerPublicKey: RSAPublicKey):
+                 paramClientPrivateKey: RSAPrivateKey, paramServerPublicKey: RSAPublicKey,
+                 paramServerSecret: str | None):
         super().__init__(Service.ServiceType.CLIENT_CONNECTION)  # Establish the service thread
 
         self.__serverIP: str = paramServerIP
@@ -32,6 +38,7 @@ class ClientConnectionService(Service.ServiceThread):
         self.__channelID: str = paramChannelID
         self.__clientPrivateKey: RSAPrivateKey = paramClientPrivateKey
         self.__serverPublicKey: RSAPublicKey = paramServerPublicKey
+        self.__serverSecret: str | None = paramServerSecret
 
 
         self.__connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)   # Create a client socket
@@ -50,6 +57,13 @@ class ClientConnectionService(Service.ServiceThread):
     """
             Getter and Setter Methods
     """
+
+    def getServerSecret(self) -> str | None:
+        """
+        Return the server secret if it is set
+        :return:
+        """
+        return self.__serverSecret
 
     def getServerIP(self) -> str:
         """
@@ -178,13 +192,24 @@ class ClientConnectionService(Service.ServiceThread):
         textMessagePacket = TextMessagePacket(paramTextMessage)  # Constructs the message packet
         self.sendPacket(textMessagePacket)  # Sends the text message packet
 
+    def sendFileBytes(self, paramFileName, paramFileBytes):
+        """
+        Send file bytes to server
+        :param paramFileName: Name of file
+        :param paramFileBytes: File bytes
+        :return:
+        """
+        fileSendPacket = FileSendPacket(paramFileName, paramFileBytes)
+        self.sendPacket(fileSendPacket)
+
 
     def sendUserDataPacket(self) -> None:
         """
         Send the clients user data to the server
         :return: None
         """
-        userDataPacket = UserDataPacket(self.getClientDisplayName())  # Construct the user data packet
+        # Construct the user data packet
+        userDataPacket = UserDataPacket(self.getClientDisplayName(), self.getServerSecret())
         self.sendPacket(userDataPacket)  # Send the user data packet
 
     def authenticate(self) ->  None:
@@ -230,8 +255,7 @@ class ClientConnectionService(Service.ServiceThread):
                 raise ClientException(self.getStopEvent(), ClientException.SERVER_FAILED_CHALLENGE)
 
             # 2.5) Load the server public key
-            der_key_size = authenticate_packetBin.getAttribute("PUBLIC_KEY_LENGTH")
-            der_key = authenticate_packetBin.getAttribute("SERVER_PUBLIC_KEY").to_bytes(der_key_size, byteorder="big")
+            der_key = authenticate_packetBin.getAttributeBytes("SERVER_PUBLIC_KEY")
 
             server_public_key = serialization.load_der_public_key(
                 der_key,
@@ -320,9 +344,11 @@ class ClientConnectionService(Service.ServiceThread):
                         if encodedMessage is None or len(encodedMessage) == 0:  # Check the info message is not empty
                             continue
 
-                        message = encodedMessage.decode()  # Decode the message
-                        info("CHANNEL_INFO", channel_id=self.getChannelID(),  # Send the info message
-                             message=message)
+                        message = encodedMessage.decode('utf-8')  # Decode the message
+                        message_lines = message.split("\n")
+                        for line in message_lines:
+                            info("CHANNEL_INFO", channel_id=self.getChannelID(),  # Send the info message
+                                 message=line)
 
                     case PacketType.S2C_TEXT_MESSAGE:  # Wait for a text message
                         encodedMessage = packetBin.getAttributeBytes("MESSAGE")  # Get the message
@@ -333,11 +359,53 @@ class ClientConnectionService(Service.ServiceThread):
                         if encodedDisplayName is None or len(encodedDisplayName) == 0:  # Check the display name
                             continue
 
-                        message = encodedMessage.decode()  # Decode the message
-                        displayName = encodedDisplayName.decode()  # Decode the display name
+                        message = encodedMessage.decode('utf-8')  # Decode the message
+                        displayName = encodedDisplayName.decode('utf-8')  # Decode the display name
 
                         info("CHANNEL_TEXT_MESSAGE", channel_id=self.getChannelID(),  # Output the message
                              display_name=displayName, message=message)
+
+                    case PacketType.S2C_SERVER_RECEIVED_FILE:  # Wait to see if a file confirmation is received
+
+                        encodedFileName = packetBin.getAttributeBytes("FILE_NAME")  # Get the file name name
+                        if encodedFileName is None or len(encodedFileName) == 0:  # Check the file name is not empty
+                            continue
+
+                        file_name = encodedFileName.decode('utf-8')
+
+                        encodedError = packetBin.getAttributeBytes("ERROR")  # Get the file name name
+                        if encodedError is None or len(encodedError) == 0:  # Check the file name is not empty
+                            info("FILE_RECEIVED_CONFIRMATION", channel_id=self.getChannelID(),  # Output the message
+                                 file_name=file_name)
+                        else:
+                            error = encodedError.decode('utf-8')
+                            info("FILE_RECEIVED_CONFIRMATION_ERROR", channel_id=self.getChannelID(),  # with error
+                                 file_name=file_name, error=error)
+
+                    case PacketType.S2C_FILE_SEND:
+
+                        encodedFileName = packetBin.getAttributeBytes("FILE_NAME")  # Get the file name name
+                        if encodedFileName is None or len(encodedFileName) == 0:  # Check the file name is not empty
+                            continue
+
+                        encodedSender = packetBin.getAttributeBytes("FILE_SENDER")  # Get the file name name
+                        if encodedSender is None or len(encodedSender) == 0:  # Check the file name is not empty
+                            continue
+
+                        file_bytes = packetBin.getAttributeBytes("FILE_DATA")
+                        if len(file_bytes) > MAX_FILE_SIZE_BYTES:
+                            continue  # Continue as file is too large
+
+                        file_name = encodedFileName.decode('utf-8')
+                        file_sender = encodedSender.decode('utf-8')
+
+                        info("FILE_RECEIVED_CLIENT", file_name=file_name, channel_id=self.getChannelID(),
+                             sender=file_sender)
+
+                        saveFile(file_name, file_bytes)
+
+                    case _:
+                        continue  # Received unrecognised packet
 
             except (cryptography.exceptions.NotYetFinalized, cryptography.exceptions.InvalidKey):
                 raise ClientException(self.getStopEvent(), ClientException.CRYPTOGRAPHY_EXCEPTION)
@@ -362,3 +430,65 @@ class ClientConnectionService(Service.ServiceThread):
             # 4) Close socket
             self.getStopEvent().set()
             self.getConnection().close()
+
+
+def openFileWithDefaultApp(paramFilePath: str) -> None:
+    """
+    Open the file using the default application associated with its file type.
+    :param: open the file path
+    :return: None
+    """
+    if sys.platform.startswith('win'):
+        os.startfile(paramFilePath)
+    elif sys.platform.startswith('darwin'):
+        subprocess.call(['open', paramFilePath])
+    else:
+        subprocess.call(['xdg-open', paramFilePath])
+
+
+def getAppDataDirectory() -> str:
+    """
+    Get the application data directory for the specified application name.
+    :return: Get the app data directory
+    """
+    if sys.platform.startswith('win'):
+        # Windows
+        app_data_dir = os.path.join(os.getenv('APPDATA'), )
+    elif sys.platform.startswith('darwin'):
+        # macOS
+        app_data_dir = os.path.expanduser(f'~/Library/Application Support/{FILE_SAVE_LOCATION}')
+    else:
+        # Linux (and other Unix-like systems)
+        app_data_dir = os.path.expanduser(f'~/.{FILE_SAVE_LOCATION}')
+
+    return app_data_dir
+
+
+def saveFile(paramFileName: str, paramFileBytes: bytes) -> None:
+    """
+    Used to save incoming files from the connection
+    :param paramFileName: File name
+    :param paramFileBytes: File bytes
+    :return: None
+    """
+
+    appDataDirectory = getAppDataDirectory()
+
+    # Check if the directory exists, if not, create it
+    if not os.path.exists(appDataDirectory):
+        os.makedirs(appDataDirectory)
+
+    # Save the file in the application data directory
+    file_path: str = os.path.join(appDataDirectory, paramFileName)
+
+    try:
+        with open(file_path, 'wb') as file:
+            file.write(paramFileBytes)
+
+        info("FILE_SAVED", file_location=file_path)
+
+        if AUTOMATICALLY_OPEN_FILES:
+            openFileWithDefaultApp(file_path)
+
+    except Exception as exception:
+        info("FAIL_FILE_SAVED", reason=str(exception))

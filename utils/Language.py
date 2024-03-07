@@ -8,6 +8,13 @@ awaitingInput = False  # Awaiting input for concurrency
 english = {
     "EMPTY_LINE": "",
 
+    "FAIL_FILE_SAVED": "Failed to save file: %reason",
+    "FILE_SAVED": "File has been saved to: %file_location",
+    "SENDING_FILE": "Sending file: %file_name to %channel_id",
+    "FILE_RECEIVED_CONFIRMATION": "Server received file: %file_name in %channel_id",
+    "FILE_RECEIVED_CONFIRMATION_ERROR": "Server received file: %file_name in %channel_id, with error %error",
+    "FILE_RECEIVED_CLIENT": "You received a file: %file_name in %channel_id, from %sender",
+
     "CHANNEL_CREATE": "Successfully created channel\n -> Terminal: %terminal\n -> Channel ID: %channel_id"
                       "\n -> Secret Key: %secret_key (Do not lose or share this!)\n -> IP: %ip"
                       "\n -> Port: %port\n -> Public: %public",
@@ -17,12 +24,12 @@ english = {
     "CHANNEL_USER_LEAVE": "(%channel_id) [-] %display_name",
 
     "CHANNEL_INFO": "(%channel_id) [INFO] %message",
-    "CHANNEL_TEXT_MESSAGE": "(%channel_id) %display_name: %message",
+    "CHANNEL_TEXT_MESSAGE": "(%channel_id) %display_name: >> %message",
     "CHANNEL_CLIENT_DISCONNECT": "(%channel_id) You have been disconnected",
     "CHANNEL_CLIENT_DISCONNECT_REASON": "(%channel_id) Disconnect reason: %reason",
 
     "MESSENGER_EXCEPTION": "Exception Occurred: %exception",
-    "SERVICE_EXCEPTION": "Exception Occurred In Service: %exception",
+    "SERVICE_EXCEPTION": "Exception Occurred In Service %service: %exception",
 
     "MESSENGER_COMMAND": "%command: %arguments",
     "MESSENGER_START": "Starting Messenger Application",
