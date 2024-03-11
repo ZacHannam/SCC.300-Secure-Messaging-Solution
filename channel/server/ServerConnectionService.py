@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import socket
 import string
 import time
@@ -453,8 +454,12 @@ class ServerConnectionService(Service.ServiceThread):
             )
 
             # 3.5) Check if client has successfully completed the challenge
-            if decryptedClientChallenge != serverAuthenticatePacket.getChallenge() + \
-                    self.getChannelID().encode('utf-8'):
+
+            challenge_hmac: bytes = hmac.new(serverAuthenticatePacket.getChallenge(),
+                                             self.getChannelID().encode('utf-8'),
+                                             hashlib.sha256).digest()
+
+            if decryptedClientChallenge != challenge_hmac:
                 raise ServerException(self.getStopEvent(), ServerException.CLIENT_FAILED_CHALLENGE)
 
         except (ValueError, cryptography.exceptions.NotYetFinalized, cryptography.exceptions.InvalidKey):

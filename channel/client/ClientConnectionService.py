@@ -4,6 +4,7 @@ import sys
 from threading import Event
 import hashlib
 import socket
+import hmac
 
 import cryptography.exceptions
 from cryptography.hazmat.primitives import serialization, hashes
@@ -265,8 +266,15 @@ class ClientConnectionService(Service.ServiceThread):
 
             """ 3) Client Authenticate Server Response """
             # 3.1) Encrypt the server challenge to send it back
+
+            # Send hmac of challenge bytes and channel id
+
+            challenge_hmac: bytes = hmac.new(authenticate_packetBin.getAttributeBytes("CHALLENGE"),
+                                             self.getChannelID().encode('utf-8'),
+                                             hashlib.sha256).digest()
+
             encryptedServerChallenge = server_public_key.encrypt(
-                authenticate_packetBin.getAttributeBytes("CHALLENGE") + self.getChannelID().encode('utf-8'),
+                challenge_hmac,
                 padding.OAEP(
                     mgf=padding.MGF1(algorithm=hashes.SHA256()),
                     algorithm=hashes.SHA256(),
