@@ -1,5 +1,4 @@
 import re
-import time
 from typing import Any
 import sys
 
@@ -556,9 +555,10 @@ class ArgumentParser:
                                                  "channel_id": str
                                              }),
 
-            COMMAND_KEY + "join_server":  (Messenger.joinServer, "<terminal> <channel_id> [-name] [-server_secret]",
+            COMMAND_KEY + "join_server":  (Messenger.joinServer, "<terminal> <channel_id> [-name] [-server_secret] ["
+                                                                 "-tor_port]",
                                            {
-                                               "terminal": str, "channel_id": str, "name": str
+                                               "terminal": str, "channel_id": str, "name": str, "tor_port": int
                                            }),
 
             COMMAND_KEY + "leave_server": (Messenger.leaveServer, "[-channel_id]",

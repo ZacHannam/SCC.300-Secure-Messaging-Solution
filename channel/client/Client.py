@@ -17,7 +17,7 @@ from utils.MessengerExceptions import ClientException
 
 class Client:
     def __init__(self, paramServerTerminal: str, paramChannelID: str, paramServerIP: str, paramServerPort: int,
-                 name=None, server_secret: str | None = None):
+                 tor_port: int | None = None, name=None, server_secret: str | None = None):
         """
         A client that connects to a server
         :param paramServerTerminal: Server Terminal URL
@@ -35,7 +35,8 @@ class Client:
         self.__serverIP: str = paramServerIP  # Server IP (x.x.x.x / a:a:a:a:a:a:a:a / http(s)://...)
         self.__serverPort: int = paramServerPort  # Server Port
         self.__channelID: str = paramChannelID  # Server Channel Name/ID
-        self.__serverSecret: str | None = server_secret
+        self.__serverSecret: str | None = server_secret  # Server secret if the client has it
+        self.__torPort: int | None = tor_port  # Tor service port for client
 
         # Generate a display name or generate one
         self.__clientDisplayName = name if name is not None else generateDisplayName()
@@ -53,6 +54,13 @@ class Client:
     """
             Getter Methods
     """
+
+    def getTorPort(self) -> int | None:
+        """
+        If the client wishes to use tor. The connection will proxy
+        :return: The tor port or none
+        """
+        return self.__torPort
 
     def getServerSecret(self) -> str | None:
         """
@@ -196,10 +204,10 @@ class Client:
         """
 
         # Start the client connection service
-        clientConnectService = ClientConnectionService(self.getServerIP(), self.getServerPort(), self.getStopEvent(),
-                                                       self.getClientDisplayName(), self.getChannelID(),
-                                                       self.getPrivateKey(), self.getServerPublicKey(),
-                                                       self.getServerSecret())
+        clientConnectService = ClientConnectionService(self.getServerIP(), self.getServerPort(), self.getTorPort(),
+                                                       self.getStopEvent(), self.getClientDisplayName(),
+                                                       self.getChannelID(), self.getPrivateKey(),
+                                                       self.getServerPublicKey(), self.getServerSecret())
         clientConnectService.start()  # Start the client connection service
 
         self.__clientConnectService = clientConnectService  # Set the client connection
@@ -243,9 +251,10 @@ def generateDisplayName(max_length=CHANNEL_USER_DISPLAY_NAME_MAX) -> str:
 
 
 def getClientFromBin(paramTerminal: str, paramChannelID: str, paramBin: Bin,
-                     name=None, server_secret=None) -> Client:
+                     tor_port: int | None = None, name=None, server_secret=None) -> Client:
     """
     Create a client object from the client binary sequencer
+    :param tor_port: The tor port for connection if they are using tor
     :param server_secret: Server secret
     :param paramTerminal: The terminal URL
     :param paramChannelID: The channel ID
@@ -302,12 +311,14 @@ def getClientFromBin(paramTerminal: str, paramChannelID: str, paramBin: Bin,
     port = paramBin.getAttribute("PORT")
 
     # 5) Generate and return the generated client
-    return Client(paramTerminal, paramChannelID, ip, port, name=name, server_secret=server_secret)
+    return Client(paramTerminal, paramChannelID, ip, port, name=name, server_secret=server_secret, tor_port=tor_port)
 
 
-def getClientFromTerminalScan(paramTerminal: str, paramChannelID: str, name=None, server_secret=None) -> Client:
+def getClientFromTerminalScan(paramTerminal: str, paramChannelID: str, tor_port: int | None = None, name=None,
+                              server_secret=None) -> Client:
     """
     Run a terminal scan to find the desired server and create a user from it
+    :param tor_port: The port of tor service if the client wishes to use it
     :param server_secret: Server secret
     :param paramTerminal: The Terminal to scan
     :param paramChannelID: The channel id to search for
@@ -322,7 +333,8 @@ def getClientFromTerminalScan(paramTerminal: str, paramChannelID: str, name=None
         raise ClientException(None, ClientException.NO_CHANNEL_ON_TERMINAL)
 
     return getClientFromBin(paramTerminal, paramChannelID, terminalScanService.getResult(),
-                            name=name, server_secret=server_secret)  # Creates a client from the collected information
+                            # Creates a client from the collected information
+                            tor_port=tor_port, name=name, server_secret=server_secret)
 
 
 def recursiveFileFinder(paramFolderPath: str) -> list[str]:

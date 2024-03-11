@@ -5,6 +5,7 @@ from threading import Event
 import hashlib
 import socket
 import hmac
+import socks
 
 import cryptography.exceptions
 from cryptography.hazmat.primitives import serialization, hashes
@@ -27,7 +28,7 @@ from channel import Service
 
 
 class ClientConnectionService(Service.ServiceThread):
-    def __init__(self, paramServerIP: str, paramServerPort: int, paramStopEvent: Event,
+    def __init__(self, paramServerIP: str, paramServerPort: int, paramTorPort: int | None, paramStopEvent: Event,
                  paramClientDisplayName: str, paramChannelID: str,
                  paramClientPrivateKey: RSAPrivateKey, paramServerPublicKey: RSAPublicKey,
                  paramServerSecret: str | None):
@@ -35,12 +36,17 @@ class ClientConnectionService(Service.ServiceThread):
 
         self.__serverIP: str = paramServerIP
         self.__serverPort: int = paramServerPort
+        self.__torPort: int | None = paramTorPort
         self.__clientDisplayName: str = paramClientDisplayName
         self.__channelID: str = paramChannelID
         self.__clientPrivateKey: RSAPrivateKey = paramClientPrivateKey
         self.__serverPublicKey: RSAPublicKey = paramServerPublicKey
         self.__serverSecret: str | None = paramServerSecret
 
+        if self.__torPort is not None:  # Set tor proxy if there is one
+            # Configure the SOCKS proxy (assuming Tor is running on localhost:9050)
+            socks.set_default_proxy(socks.SOCKS5, "localhost", self.getTorPort())
+            socket.socket = socks.socksocket
 
         self.__connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)   # Create a client socket
 
@@ -58,6 +64,13 @@ class ClientConnectionService(Service.ServiceThread):
     """
             Getter and Setter Methods
     """
+
+    def getTorPort(self) -> int | None:
+        """
+        If the client wishes to use tor. The connection will proxy
+        :return: The tor port or none
+        """
+        return self.__torPort
 
     def getServerSecret(self) -> str | None:
         """
