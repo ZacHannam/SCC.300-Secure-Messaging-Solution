@@ -240,7 +240,7 @@ class Messenger:
         """
 
         # 1) Check if the display name is defined
-        client_kwargs = dict([(key, kwargs[key]) for key in ["name", "server_secret"]
+        client_kwargs = dict([(key, kwargs[key]) for key in ["name", "server_secret", "tor_port"]
                               if key in kwargs])
 
         # 2) Get the client from the terminal scan
