@@ -60,5 +60,5 @@ SEND_HIDDEN_FILES              = False                                  # Send h
         Terminal
 """
 
-TERMINAL_VERSION               = "beta0.1"                              # Terminal and Client version
+TERMINAL_VERSION               = "VERSION-1"                            # Terminal and Client version
 TERMINAL_PROTOCOL              = ["http://", "https://"]                # Protocols that the terminal could use
