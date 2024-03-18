@@ -42,6 +42,7 @@ CHANNEL_USER_DISPLAY_NAME_MAX  = 16                                     # Number
 CHANNEL_ID_LENGTH              = (14, 20)                               # Channel ID length (generated)
 CHANNEL_SECRET_KEY_LENGTH      = (20, 28)                               # Channel Secret Key (generated)
 NAMES_LIST_FILE                = "utils/names_list.txt"                 # List of names for generated names
+EULA_FILE                      = "eula.txt"                             # EULA file for hosting server
 PACKET_MAX_SIZE                = 8192                                   # Packet size maximum (bits)
 ALIVE_TIME                     = 20                                     # Seconds between sending alive packets
 ALIVE_TIMEOUT                  = 120                                    # Alive timeout

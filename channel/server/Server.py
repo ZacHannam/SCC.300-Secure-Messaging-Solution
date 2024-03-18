@@ -1,3 +1,4 @@
+import os.path
 import random
 import re
 import hashlib
@@ -11,7 +12,7 @@ from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPubl
 
 from Properties import CHANNEL_ID_LENGTH, CHANNEL_SECRET_KEY_LENGTH, DEFAULT_PORT_SERVER, CHANNEL_BIN_DIMENSIONS, \
     CHANNEL_INFO_BIN_DIMENSIONS, IPType, TERMINAL_PROTOCOL, DEFAULT_BAN_REASON, CHANNEL_BIN_INVALIDATE_DIMENSIONS,\
-    RSA_KEY_SIZE
+    RSA_KEY_SIZE, EULA_FILE
 from channel.server.PublishChannelService import PublishChannelService
 from channel.server.ServerAliveService import ServerAliveService
 from channel.server.ServerConnectionService import ServerConnectionService
@@ -26,6 +27,10 @@ from utils.MessengerExceptions import ServerException
 class Server:
     def __init__(self, paramServerTerminal: str, channel_id=None, secret_key=None, port=DEFAULT_PORT_SERVER,
                  tunnel_url=None, public=False, max_users=20, banned_users=None):
+
+        # Check for eula variable
+        if not readEULA():
+            raise ServerException(None, ServerException.EULA_FALSE)
 
         # Validate that the server terminal starts with an accepted protocol
         if not any([paramServerTerminal.startswith(protocol) for protocol in TERMINAL_PROTOCOL]):
@@ -208,7 +213,7 @@ class Server:
         :return: client connections
         """
         for serverConnectionService in self.getUserList():
-            if serverConnectionService.getDisplayName() == paramDisplayName:
+            if serverConnectionService.getDisplayName(False) == paramDisplayName:
                 return serverConnectionService
 
         raise ServerException(self.getStopEvent(), ServerException.FAILED_TO_FIND_USER)
@@ -382,6 +387,41 @@ class Server:
 
         if not publishChannelService.getResult()['SUCCESS']:
             raise ServerException(self.getStopEvent(), ServerException.FAILED_TO_PUBLISH_CHANNEL)
+
+
+def readEULA() -> bool:
+    """
+    Returns the variable from the eula
+    :return: EULA variable
+    """
+
+    # Check if eula file exists
+    if not os.path.exists(EULA_FILE):
+        raise ServerException(None, ServerException.EULA_DOES_NOT_EXIST)
+
+    try:
+        with open(EULA_FILE, "r") as file:
+
+            file_content = file.read()
+
+            # Use regex to see if the eula variable is set to true or false
+            eula_status = re.search(r"eula\s*=\s*(?i)(true|false)", file_content)
+
+            # Check if eula variable is found
+            if eula_status:
+                # Extract the status of eula variable
+                eula_value = eula_status.group(1)
+
+                if eula_value.lower() == "true":  # Check if eula is true
+                    return True
+                return False  # Anything else will return false
+            else:
+                raise ServerException(None, ServerException.NO_EULA_VARIABLE)
+    except PermissionError:
+        raise ServerException(None, ServerException.ERROR_OPENING_EULA)
+
+
+
 
 
 def generateRandomSequence(length: tuple | int) -> str:

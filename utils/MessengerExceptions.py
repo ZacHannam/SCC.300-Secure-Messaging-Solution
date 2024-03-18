@@ -69,6 +69,11 @@ class ServerException(MessengerException):
     FAILED_TO_FIND_USER = MessengerException.Exception(False, "Failed to find user by their display name")
     FAILED_TO_START_HOST_SERVICE = MessengerException.Exception(True, "Failed to start host service")
 
+    EULA_FALSE = MessengerException.Exception(False, "Please read and agree to the EULA within the provided EULA file")
+    ERROR_OPENING_EULA = MessengerException.Exception(False, "Failed to open EULA file")
+    EULA_DOES_NOT_EXIST = MessengerException.Exception(True, "Failed to find EULA file")
+    NO_EULA_VARIABLE = MessengerException.Exception(True, "No EULA Variable in EULA file")
+
 
 class ClientException(MessengerException):
     """
