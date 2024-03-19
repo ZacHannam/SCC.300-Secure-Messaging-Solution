@@ -71,7 +71,7 @@ class UnPublishChannelService(Service.ServiceThread):
                 "CHANNEL_BYTES": base64.b64encode(channelBinBytes).decode('utf-8')
             }
 
-            response = requests.post(f"{self.getTerminal()}/unvalidate", json=json)
+            response = requests.post(f"{self.getTerminal()}/invalidate", json=json)
 
             self.__result = response.json()
 

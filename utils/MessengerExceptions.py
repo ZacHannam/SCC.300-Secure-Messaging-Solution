@@ -58,7 +58,7 @@ class ServerException(MessengerException):
     FAILED_TO_GET_CLIENT_CREDENTIALS = MessengerException.Exception(True, "Failed to get client credentials")
     CLIENT_REJECTED = MessengerException.Exception(True, "Client was rejected from joining server")
     FAILED_TO_GET_IP = MessengerException.Exception(True, "Failed to get external IP")
-    FAILED_TO_UNVALIDATE_TERMINAL = MessengerException.Exception(True, "Failed to unvalidate terminal")
+    FAILED_TO_INVALIDATE_TERMINAL = MessengerException.Exception(True, "Failed to invalidate terminal")
     FAILED_TO_VALIDATE_TERMINAL = MessengerException.Exception(True, "Failed to validate terminal")
     FAILED_TO_PUBLISH_CHANNEL = MessengerException.Exception(True, "Failed to publish channel")
     FAILED_TO_UNPUBLISH_CHANNEL = MessengerException.Exception(True, "Failed to unpublish channel")

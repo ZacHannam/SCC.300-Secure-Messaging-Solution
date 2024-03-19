@@ -268,8 +268,8 @@ def validateChannel():
         })
 
 
-@app.route("/unvalidate", methods=['POST'])
-def unvalidateChannel():
+@app.route("/invalidate", methods=['POST'])
+def invalidateChannel():
     try:
         # 1) Check if it is a post request
         if request.method != 'POST':

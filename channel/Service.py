@@ -18,7 +18,6 @@ class ServiceType(Enum):
     SERVER_HOST                 = auto()  # Host the channel                                      C
     SERVER_CONNECTION           = auto()  # Connect to the client                                 C
     SERVER_ALIVE                = auto()  # Runs to check if the client is still alive            C
-    SERVER_TUNNEL               = auto()  # Service to tunnel                                     C
 
     CLIENT_CONNECTION           = auto()  # Connect to the host                                   C
 

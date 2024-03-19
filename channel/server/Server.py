@@ -319,9 +319,9 @@ class Server:
     """
 
     def stopServer(self):
-        # Start unvalidate service in terminal
+        # Start invalidate service in terminal
         unpublishService = UnPublishChannelService(self.getStopEvent(), self.getTerminal(),
-                                                   createUnvalidateChannelBin(self))
+                                                   createInvalidateChannelBin(self))
         unpublishService.start()
 
         # Kick all users
@@ -583,21 +583,21 @@ def createValidateChannelBin(paramServer: Server) -> Bin:
     return channelBin
 
 
-def createUnvalidateChannelBin(paramServer: Server) -> Bin:
+def createInvalidateChannelBin(paramServer: Server) -> Bin:
     """
-    Creates the unvalidate channel bin info
+    Creates the invalidate channel bin info
     :param paramServer:
     :return:
     """
 
-    unvalidateChannelBin = Bin(CHANNEL_BIN_INVALIDATE_DIMENSIONS)
+    invalidateChannelBin = Bin(CHANNEL_BIN_INVALIDATE_DIMENSIONS)
 
     channelBin: Bin = createValidateChannelBin(paramServer)
     infoBin: Bin = Bin(CHANNEL_INFO_BIN_DIMENSIONS, population=channelBin.getAttribute("CHANNEL_INFO_BIN"))
 
     # Set secret key
-    unvalidateChannelBin.setAttribute("CHANNEL_SECRET_BIN", channelBin.getAttribute("CHANNEL_SECRET_BIN"))
-    unvalidateChannelBin.setAttribute("UNIQUE_AUTH_HI", infoBin.getAttribute("UNIQUE_AUTH_HI"))
-    unvalidateChannelBin.setAttribute("UNIQUE_AUTH_LO", infoBin.getAttribute("UNIQUE_AUTH_LO"))
+    invalidateChannelBin.setAttribute("CHANNEL_SECRET_BIN", channelBin.getAttribute("CHANNEL_SECRET_BIN"))
+    invalidateChannelBin.setAttribute("UNIQUE_AUTH_HI", infoBin.getAttribute("UNIQUE_AUTH_HI"))
+    invalidateChannelBin.setAttribute("UNIQUE_AUTH_LO", infoBin.getAttribute("UNIQUE_AUTH_LO"))
 
-    return unvalidateChannelBin
+    return invalidateChannelBin
