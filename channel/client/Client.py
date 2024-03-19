@@ -6,7 +6,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
 
 from Properties import CHANNEL_USER_DISPLAY_NAME_MAX, NAMES_LIST_FILE, TERMINAL_PROTOCOL, RSA_KEY_SIZE, \
-    MAX_FILE_SIZE_BYTES, SEND_HIDDEN_FILES
+    MAX_FILE_SIZE_BYTES, SEND_HIDDEN_FILES, LEGAL_DISPLAY_NAME_CHARACTERS
 from channel.client.ClientConnectionService import ClientConnectionService
 from channel.client.TerminalScanService import TerminalScanService
 from utils.BinarySequencer import Bin, getBinSize
@@ -240,8 +240,18 @@ def generateDisplayName(max_length=CHANNEL_USER_DISPLAY_NAME_MAX) -> str:
         names = nameFile.readlines()
 
         selectName = lambda: names[random.randint(0, len(names))]  # Select a random name / line
-        while (selectedName := selectName()) in ("", None):  # Make sure the name selected is not empty (double check)
-            continue
+        while True:  # Make sure the name selected is not empty (double check)
+
+            selectedName = selectName()
+
+            # Check name is valid
+            if selectedName is None\
+                    or selectName == ""\
+                    or selectedName.startswith("//")\
+                    or any(char not in LEGAL_DISPLAY_NAME_CHARACTERS for char in selectedName):
+                continue  # Continue as invalid name
+
+            break
 
     selectedName += "".join(random.choices("0123456789", k=random.randint(0, 3)))  # Add numbers to the end of the name
 
