@@ -498,6 +498,9 @@ def saveFile(paramFileName: str, paramFileBytes: bytes) -> None:
 
     appDataDirectory = getAppDataDirectory()
 
+    if paramFileName.startswith("."): # Makes sure to show hidden files
+        paramFileName += "hidden"
+
     # Save the file in the application data directory
     file_path: str = os.path.join(appDataDirectory, paramFileName)
 
