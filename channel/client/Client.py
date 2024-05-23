@@ -239,7 +239,7 @@ def generateDisplayName(max_length=CHANNEL_USER_DISPLAY_NAME_MAX) -> str:
     with open(NAMES_LIST_FILE) as nameFile:  # Read the names in the names list
         names = nameFile.readlines()
 
-        selectName = lambda: names[random.randint(0, len(names))]  # Select a random name / line
+        selectName = lambda: names[random.randint(0, len(names) - 1)]  # Select a random name / line
         while True:  # Make sure the name selected is not empty (double check)
 
             selectedName = selectName()
