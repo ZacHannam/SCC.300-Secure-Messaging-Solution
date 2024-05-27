@@ -242,7 +242,7 @@ def generateDisplayName(max_length=CHANNEL_USER_DISPLAY_NAME_MAX) -> str:
         selectName = lambda: names[random.randint(0, len(names) - 1)]  # Select a random name / line
         while True:  # Make sure the name selected is not empty (double check)
 
-            selectedName = selectName()
+            selectedName = selectName().rstrip()
 
             # Check name is valid
             if selectedName is None\
